@@ -1,0 +1,57 @@
+.camera-info {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  padding: 16px;
+  color: #fff;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  min-width: 280px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.camera-section {
+  margin-bottom: 12px;
+}
+
+.camera-section:last-child {
+  margin-bottom: 0;
+}
+
+.camera-label {
+  color: #4a9eff;
+  font-weight: 600;
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.camera-values {
+  display: flex;
+  gap: 16px;
+}
+
+.camera-values span {
+  color: #aaa;
+}
+
+.matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.matrix-row {
+  display: flex;
+  gap: 8px;
+}
+
+.matrix-row span {
+  color: #888;
+  width: 60px;
+  text-align: right;
+}

@@ -1,0 +1,894 @@
+import { useEffect, useRef, useCallback, useState } from 'react'
+import * as THREE from 'three'
+import * as WebIFC from 'web-ifc'
+import type { CameraState, ElementCategory, IFCMetadata, StoreyInfo } from '../types'
+import './IFCViewer.css'
+
+interface IFCViewerProps {
+  ifcData: ArrayBuffer
+  categories: ElementCategory[]
+  onCategoriesLoaded: (categories: ElementCategory[]) => void
+  onCameraChange: (state: CameraState) => void
+  onMetadataLoaded: (metadata: IFCMetadata) => void
+  selectedStorey: number | null
+  storeys: StoreyInfo[]
+}
+
+export function IFCViewer({
+  ifcData,
+  categories,
+  onCategoriesLoaded,
+  onCameraChange,
+  onMetadataLoaded,
+  selectedStorey,
+  storeys
+}: IFCViewerProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const sceneRef = useRef<THREE.Scene | null>(null)
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
+  const modelGroupRef = useRef<THREE.Group | null>(null)
+  const ifcApiRef = useRef<WebIFC.IfcAPI | null>(null)
+  const animationIdRef = useRef<number>(0)
+  const pivotMarkerRef = useRef<THREE.Mesh | null>(null)
+  const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster())
+  const lastFrameTimeRef = useRef<number>(performance.now())
+  const frameCountRef = useRef<number>(0)
+  const fpsUpdateIntervalRef = useRef<number>(0)
+
+  // Diagnostics state
+  const [diagnostics, setDiagnostics] = useState({
+    fps: 0,
+    triangles: 0,
+    drawCalls: 0,
+    geometries: 0,
+    textures: 0,
+    // Performance mode stats
+    totalMeshes: 0,
+    visibleMeshes: 0,
+    frustumCulled: 0
+  })
+
+  // High performance mode
+  const [performanceMode, setPerformanceMode] = useState(false)
+  const performanceModeRef = useRef(false)
+  const frustumRef = useRef(new THREE.Frustum())
+  const projScreenMatrixRef = useRef(new THREE.Matrix4())
+  const meshBoundsMapRef = useRef<Map<number, THREE.Box3>>(new Map())
+  const cullingStatsRef = useRef({ total: 0, visible: 0, frustumCulled: 0 })
+  const categoriesRef = useRef<ElementCategory[]>([])
+  const selectedStoreyRef = useRef<number | null>(null)
+  const storeysRef = useRef<StoreyInfo[]>([])
+  const storeyElementSetRef = useRef<Set<number>>(new Set())
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    performanceModeRef.current = performanceMode
+  }, [performanceMode])
+
+  useEffect(() => {
+    categoriesRef.current = categories
+  }, [categories])
+
+  useEffect(() => {
+    selectedStoreyRef.current = selectedStorey
+    // Build set of element IDs for selected storey
+    if (selectedStorey !== null) {
+      const storey = storeys.find(s => s.id === selectedStorey)
+      storeyElementSetRef.current = new Set(storey?.elementIds || [])
+    } else {
+      storeyElementSetRef.current = new Set()
+    }
+  }, [selectedStorey, storeys])
+
+  useEffect(() => {
+    storeysRef.current = storeys
+  }, [storeys])
+
+  // Loading state
+  const [loadingState, setLoadingState] = useState<{
+    loading: boolean
+    stage: string
+    meshCount: number
+  }>({ loading: true, stage: 'Initializing...', meshCount: 0 })
+
+  // Camera control state
+  const isMouseDownRef = useRef(false)
+  const isPanningRef = useRef(false)
+  const lastMouseRef = useRef({ x: 0, y: 0 })
+  const sphericalRef = useRef({ radius: 100, phi: Math.PI / 4, theta: Math.PI / 4 })
+  const targetRef = useRef(new THREE.Vector3(0, 0, 0))
+
+  const updateCameraState = useCallback(() => {
+    if (!cameraRef.current) return
+
+    const camera = cameraRef.current
+    camera.updateMatrixWorld()
+    const matrix = camera.matrixWorld.elements
+
+    onCameraChange({
+      position: {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z
+      },
+      rotation: [
+        [matrix[0], matrix[4], matrix[8], matrix[12]],
+        [matrix[1], matrix[5], matrix[9], matrix[13]],
+        [matrix[2], matrix[6], matrix[10], matrix[14]],
+        [matrix[3], matrix[7], matrix[11], matrix[15]]
+      ]
+    })
+  }, [onCameraChange])
+
+  const updateCameraFromSpherical = useCallback(() => {
+    if (!cameraRef.current) return
+
+    const { radius, phi, theta } = sphericalRef.current
+    const target = targetRef.current
+
+    const camera = cameraRef.current
+    camera.position.x = target.x + radius * Math.sin(phi) * Math.cos(theta)
+    camera.position.y = target.y + radius * Math.cos(phi)
+    camera.position.z = target.z + radius * Math.sin(phi) * Math.sin(theta)
+    camera.lookAt(target)
+    camera.updateProjectionMatrix()
+
+    updateCameraState()
+  }, [updateCameraState])
+
+  const updatePivotMarker = useCallback((position: THREE.Vector3) => {
+    if (!sceneRef.current) return
+
+    // Remove old marker
+    if (pivotMarkerRef.current) {
+      sceneRef.current.remove(pivotMarkerRef.current)
+      pivotMarkerRef.current.geometry.dispose()
+      ;(pivotMarkerRef.current.material as THREE.Material).dispose()
+    }
+
+    // Create new marker
+    const markerSize = sphericalRef.current.radius * 0.01
+    const geometry = new THREE.SphereGeometry(markerSize, 16, 16)
+    const material = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    const marker = new THREE.Mesh(geometry, material)
+    marker.position.copy(position)
+    sceneRef.current.add(marker)
+    pivotMarkerRef.current = marker
+  }, [])
+
+  // Initialize Three.js scene
+  useEffect(() => {
+    if (!containerRef.current) return
+
+    // Cleanup any existing renderer first
+    if (rendererRef.current) {
+      rendererRef.current.dispose()
+      rendererRef.current.forceContextLoss()
+      if (containerRef.current.contains(rendererRef.current.domElement)) {
+        containerRef.current.removeChild(rendererRef.current.domElement)
+      }
+      rendererRef.current = null
+    }
+
+    // Scene setup
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(0x1a1a2e)
+    sceneRef.current = scene
+
+    // Camera setup with larger far plane for big models
+    const camera = new THREE.PerspectiveCamera(
+      60,
+      containerRef.current.clientWidth / containerRef.current.clientHeight,
+      0.1,
+      100000
+    )
+    cameraRef.current = camera
+
+    // Renderer setup with error handling
+    let renderer: THREE.WebGLRenderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+    } catch (e) {
+      console.error('Failed to create WebGL renderer:', e)
+      return
+    }
+
+    renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight)
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    containerRef.current.appendChild(renderer.domElement)
+    rendererRef.current = renderer
+
+    // Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
+    scene.add(ambientLight)
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8)
+    directionalLight.position.set(50, 100, 50)
+    scene.add(directionalLight)
+
+    const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4)
+    directionalLight2.position.set(-50, 50, -50)
+    scene.add(directionalLight2)
+
+    // Model group
+    const modelGroup = new THREE.Group()
+    scene.add(modelGroup)
+    modelGroupRef.current = modelGroup
+
+    // Animation loop with FPS tracking and performance culling
+    const animate = () => {
+      animationIdRef.current = requestAnimationFrame(animate)
+
+      // Performance mode: LOD swap and frustum culling
+      if (performanceModeRef.current && modelGroupRef.current) {
+        camera.updateMatrixWorld()
+        projScreenMatrixRef.current.multiplyMatrices(
+          camera.projectionMatrix,
+          camera.matrixWorldInverse
+        )
+        frustumRef.current.setFromProjectionMatrix(projScreenMatrixRef.current)
+
+        // Build category visibility map
+        const categoryVisibility = new Map(
+          categoriesRef.current.map(c => [c.id, c.visible])
+        )
+
+        let total = 0
+        let visible = 0
+        let frustumCulled = 0
+
+        // Check if storey filter is active
+        const hasStoreyFilter = selectedStoreyRef.current !== null
+        const storeyElements = storeyElementSetRef.current
+
+        modelGroupRef.current.traverse((obj) => {
+          if (obj instanceof THREE.Mesh && obj.userData.expressID !== undefined) {
+            total++
+
+            // Check storey visibility first
+            if (hasStoreyFilter && !storeyElements.has(obj.userData.expressID)) {
+              obj.visible = false
+              return
+            }
+
+            // Check category visibility
+            const categoryId = obj.userData.categoryId
+            if (categoryId !== undefined && categoryVisibility.get(categoryId) === false) {
+              obj.visible = false
+              return
+            }
+
+            // Get or compute bounding box
+            let bounds = meshBoundsMapRef.current.get(obj.id)
+            if (!bounds) {
+              bounds = new THREE.Box3().setFromObject(obj)
+              meshBoundsMapRef.current.set(obj.id, bounds)
+            }
+
+            // Frustum culling
+            if (!frustumRef.current.intersectsBox(bounds)) {
+              obj.visible = false
+              frustumCulled++
+              return
+            }
+
+            obj.visible = true
+            visible++
+          }
+        })
+
+        cullingStatsRef.current = { total, visible, frustumCulled }
+      }
+
+      renderer.render(scene, camera)
+
+      // FPS calculation
+      frameCountRef.current++
+      const now = performance.now()
+      fpsUpdateIntervalRef.current += now - lastFrameTimeRef.current
+      lastFrameTimeRef.current = now
+
+      // Update diagnostics every 500ms
+      if (fpsUpdateIntervalRef.current >= 500) {
+        const fps = Math.round((frameCountRef.current * 1000) / fpsUpdateIntervalRef.current)
+        const info = renderer.info
+        const stats = cullingStatsRef.current
+        setDiagnostics({
+          fps,
+          triangles: info.render.triangles,
+          drawCalls: info.render.calls,
+          geometries: info.memory.geometries,
+          textures: info.memory.textures,
+          totalMeshes: stats.total,
+          visibleMeshes: stats.visible,
+          frustumCulled: stats.frustumCulled
+        })
+        frameCountRef.current = 0
+        fpsUpdateIntervalRef.current = 0
+      }
+    }
+    animate()
+
+    // Handle resize
+    const handleResize = () => {
+      if (!containerRef.current) return
+      const width = containerRef.current.clientWidth
+      const height = containerRef.current.clientHeight
+      camera.aspect = width / height
+      camera.updateProjectionMatrix()
+      renderer.setSize(width, height)
+    }
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      cancelAnimationFrame(animationIdRef.current)
+      renderer.dispose()
+      renderer.forceContextLoss()
+      if (containerRef.current?.contains(renderer.domElement)) {
+        containerRef.current.removeChild(renderer.domElement)
+      }
+      rendererRef.current = null
+      sceneRef.current = null
+      cameraRef.current = null
+      modelGroupRef.current = null
+    }
+  }, [])
+
+  // Mouse controls
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const handleMouseDown = (e: MouseEvent) => {
+      isMouseDownRef.current = true
+      isPanningRef.current = e.button === 2 || e.shiftKey
+      lastMouseRef.current = { x: e.clientX, y: e.clientY }
+    }
+
+    const handleMouseUp = () => {
+      isMouseDownRef.current = false
+      isPanningRef.current = false
+    }
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isMouseDownRef.current) return
+
+      const deltaX = e.clientX - lastMouseRef.current.x
+      const deltaY = e.clientY - lastMouseRef.current.y
+      lastMouseRef.current = { x: e.clientX, y: e.clientY }
+
+      if (isPanningRef.current) {
+        // Pan
+        const panSpeed = sphericalRef.current.radius * 0.002
+        const camera = cameraRef.current
+        if (!camera) return
+
+        const forward = new THREE.Vector3()
+        camera.getWorldDirection(forward)
+        const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize()
+        const up = new THREE.Vector3().crossVectors(right, forward).normalize()
+
+        targetRef.current.add(right.multiplyScalar(-deltaX * panSpeed))
+        targetRef.current.add(up.multiplyScalar(deltaY * panSpeed))
+      } else {
+        // Rotate (reversed directions)
+        sphericalRef.current.theta += deltaX * 0.01
+        sphericalRef.current.phi = Math.max(0.1, Math.min(Math.PI - 0.1, sphericalRef.current.phi - deltaY * 0.01))
+      }
+
+      updateCameraFromSpherical()
+    }
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const zoomSpeed = 1.1
+      if (e.deltaY > 0) {
+        sphericalRef.current.radius = Math.min(50000, sphericalRef.current.radius * zoomSpeed)
+      } else {
+        sphericalRef.current.radius = Math.max(0.1, sphericalRef.current.radius / zoomSpeed)
+      }
+      updateCameraFromSpherical()
+    }
+
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault()
+    }
+
+    const handleDoubleClick = (e: MouseEvent) => {
+      if (!cameraRef.current || !modelGroupRef.current || !containerRef.current) return
+
+      const rect = containerRef.current.getBoundingClientRect()
+      const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      )
+
+      raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+      const intersects = raycasterRef.current.intersectObject(modelGroupRef.current, true)
+
+      if (intersects.length > 0) {
+        const hitPoint = intersects[0].point
+        targetRef.current.copy(hitPoint)
+        updatePivotMarker(hitPoint)
+      }
+    }
+
+    container.addEventListener('mousedown', handleMouseDown)
+    container.addEventListener('mouseup', handleMouseUp)
+    container.addEventListener('mouseleave', handleMouseUp)
+    container.addEventListener('mousemove', handleMouseMove)
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    container.addEventListener('contextmenu', handleContextMenu)
+    container.addEventListener('dblclick', handleDoubleClick)
+
+    return () => {
+      container.removeEventListener('mousedown', handleMouseDown)
+      container.removeEventListener('mouseup', handleMouseUp)
+      container.removeEventListener('mouseleave', handleMouseUp)
+      container.removeEventListener('mousemove', handleMouseMove)
+      container.removeEventListener('wheel', handleWheel)
+      container.removeEventListener('contextmenu', handleContextMenu)
+      container.removeEventListener('dblclick', handleDoubleClick)
+    }
+  }, [updateCameraFromSpherical, updatePivotMarker])
+
+  // Load IFC data
+  useEffect(() => {
+    if (!ifcData || !sceneRef.current || !modelGroupRef.current) return
+
+    const loadIFC = async () => {
+      console.log('Loading IFC file...')
+      setLoadingState({ loading: true, stage: 'Initializing WebIFC...', meshCount: 0 })
+
+      const ifcApi = new WebIFC.IfcAPI()
+      ifcApi.SetWasmPath('/')
+      await ifcApi.Init()
+      ifcApiRef.current = ifcApi
+
+      setLoadingState({ loading: true, stage: 'Parsing IFC file...', meshCount: 0 })
+      const modelID = ifcApi.OpenModel(new Uint8Array(ifcData))
+      console.log('Model opened, ID:', modelID)
+
+      // Extract IFC metadata
+      setLoadingState({ loading: true, stage: 'Reading metadata...', meshCount: 0 })
+      const metadata = extractMetadata(ifcApi, modelID)
+      onMetadataLoaded(metadata)
+
+      setLoadingState({ loading: true, stage: 'Loading geometry...', meshCount: 0 })
+
+      const modelGroup = modelGroupRef.current!
+      const categoryData: Map<number, { count: number; meshIds: number[] }> = new Map()
+      let meshCount = 0
+
+      // Get all geometry
+      ifcApi.StreamAllMeshes(modelID, (mesh) => {
+        const expressID = mesh.expressID
+
+        // Get element type
+        let typeId = 0
+        try {
+          const element = ifcApi.GetLine(modelID, expressID)
+          typeId = element?.type || 0
+        } catch {
+          typeId = 0
+        }
+
+        if (!categoryData.has(typeId)) {
+          categoryData.set(typeId, { count: 0, meshIds: [] })
+        }
+        categoryData.get(typeId)!.count++
+        categoryData.get(typeId)!.meshIds.push(expressID)
+
+        const placedGeometries = mesh.geometries
+        for (let i = 0; i < placedGeometries.size(); i++) {
+          const placedGeometry = placedGeometries.get(i)
+          const geometry = ifcApi.GetGeometry(modelID, placedGeometry.geometryExpressID)
+
+          const verts = ifcApi.GetVertexArray(
+            geometry.GetVertexData(),
+            geometry.GetVertexDataSize()
+          )
+          const indices = ifcApi.GetIndexArray(
+            geometry.GetIndexData(),
+            geometry.GetIndexDataSize()
+          )
+
+          if (verts.length === 0 || indices.length === 0) continue
+
+          // Create Three.js geometry
+          const bufferGeometry = new THREE.BufferGeometry()
+
+          const positions: number[] = []
+          const normals: number[] = []
+
+          for (let j = 0; j < verts.length; j += 6) {
+            positions.push(verts[j], verts[j + 1], verts[j + 2])
+            normals.push(verts[j + 3], verts[j + 4], verts[j + 5])
+          }
+
+          bufferGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+          bufferGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+          bufferGeometry.setIndex(Array.from(indices))
+
+          // Apply transformation
+          const matrix = new THREE.Matrix4()
+          matrix.fromArray(placedGeometry.flatTransformation)
+          bufferGeometry.applyMatrix4(matrix)
+
+          // Create material with color from IFC
+          const color = new THREE.Color(
+            placedGeometry.color.x,
+            placedGeometry.color.y,
+            placedGeometry.color.z
+          )
+
+          const material = new THREE.MeshPhongMaterial({
+            color,
+            opacity: placedGeometry.color.w,
+            transparent: placedGeometry.color.w < 1,
+            side: THREE.DoubleSide
+          })
+
+          const threeMesh = new THREE.Mesh(bufferGeometry, material)
+          threeMesh.userData.expressID = expressID
+          threeMesh.userData.categoryId = typeId
+
+          modelGroup.add(threeMesh)
+          meshCount++
+
+          // Update loading progress every 50 meshes
+          if (meshCount % 50 === 0) {
+            setLoadingState({ loading: true, stage: 'Loading geometry...', meshCount })
+          }
+        }
+      })
+
+      console.log('Created', meshCount, 'meshes')
+
+      // Compute bounding box and center camera
+      const box = new THREE.Box3()
+      box.setFromObject(modelGroup)
+
+      if (box.isEmpty()) {
+        console.warn('Bounding box is empty, using default camera position')
+        targetRef.current.set(0, 0, 0)
+        sphericalRef.current.radius = 100
+      } else {
+        const center = box.getCenter(new THREE.Vector3())
+        const size = box.getSize(new THREE.Vector3())
+        const maxDim = Math.max(size.x, size.y, size.z)
+
+        console.log('Model center:', center)
+        console.log('Model size:', size)
+        console.log('Max dimension:', maxDim)
+
+        targetRef.current.copy(center)
+        sphericalRef.current.radius = maxDim * 2
+
+        // Update camera near/far based on model size
+        if (cameraRef.current) {
+          cameraRef.current.near = maxDim * 0.001
+          cameraRef.current.far = maxDim * 100
+          cameraRef.current.updateProjectionMatrix()
+        }
+      }
+
+      updateCameraFromSpherical()
+
+      // Build categories for UI
+      const categoriesArray: ElementCategory[] = Array.from(categoryData.entries())
+        .filter(([, data]) => data.count > 0)
+        .map(([id, data]) => ({
+          id,
+          name: getTypeName(id),
+          count: data.count,
+          visible: true,
+          meshIds: data.meshIds
+        }))
+        .sort((a, b) => b.count - a.count)
+
+      console.log('Categories:', categoriesArray.length)
+      onCategoriesLoaded(categoriesArray)
+
+      setLoadingState({ loading: false, stage: 'Complete', meshCount })
+    }
+
+    loadIFC().catch(err => {
+      console.error('Error loading IFC:', err)
+    })
+
+    return () => {
+      if (ifcApiRef.current) {
+        try {
+          ifcApiRef.current.CloseModel(0)
+        } catch {
+          // Ignore close errors
+        }
+      }
+    }
+  }, [ifcData, onCategoriesLoaded, onMetadataLoaded, updateCameraFromSpherical])
+
+  // Update visibility based on categories and selected storey
+  useEffect(() => {
+    if (!modelGroupRef.current || categories.length === 0) return
+
+    // Skip if performance mode is active (it handles visibility)
+    if (performanceMode) return
+
+    const visibilityMap = new Map(categories.map(c => [c.id, c.visible]))
+    const storeyElementSet = selectedStorey !== null
+      ? new Set(storeys.find(s => s.id === selectedStorey)?.elementIds || [])
+      : null
+
+    modelGroupRef.current.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.userData.categoryId !== undefined) {
+        const categoryVisible = visibilityMap.get(obj.userData.categoryId) ?? true
+        const expressID = obj.userData.expressID
+
+        // Check storey filter
+        const storeyVisible = storeyElementSet === null || storeyElementSet.has(expressID)
+
+        obj.visible = categoryVisible && storeyVisible
+      }
+    })
+  }, [categories, performanceMode, selectedStorey, storeys])
+
+  return (
+    <div className="ifc-viewer" ref={containerRef}>
+      {loadingState.loading && (
+        <div className="loading-overlay">
+          <div className="loading-content">
+            <div className="loading-spinner"></div>
+            <div className="loading-stage">{loadingState.stage}</div>
+            {loadingState.meshCount > 0 && (
+              <div className="loading-count">{loadingState.meshCount.toLocaleString()} meshes</div>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="diagnostics-panel">
+        <div className="diagnostics-row">
+          <span className="diagnostics-label">FPS</span>
+          <span className="diagnostics-value">{diagnostics.fps}</span>
+        </div>
+        <div className="diagnostics-row">
+          <span className="diagnostics-label">Triangles</span>
+          <span className="diagnostics-value">{diagnostics.triangles.toLocaleString()}</span>
+        </div>
+        <div className="diagnostics-row">
+          <span className="diagnostics-label">Draw calls</span>
+          <span className="diagnostics-value">{diagnostics.drawCalls}</span>
+        </div>
+        <div className="diagnostics-row">
+          <span className="diagnostics-label">Geometries</span>
+          <span className="diagnostics-value">{diagnostics.geometries}</span>
+        </div>
+        <div className="diagnostics-row">
+          <span className="diagnostics-label">Textures</span>
+          <span className="diagnostics-value">{diagnostics.textures}</span>
+        </div>
+
+        <div className="diagnostics-divider" />
+
+        <button
+          className={`perf-mode-toggle ${performanceMode ? 'active' : ''}`}
+          onClick={() => setPerformanceMode(!performanceMode)}
+        >
+          {performanceMode ? 'Perf Mode ON' : 'Perf Mode OFF'}
+        </button>
+
+        {performanceMode && (
+          <>
+            <div className="diagnostics-row">
+              <span className="diagnostics-label">Visible</span>
+              <span className="diagnostics-value">
+                {diagnostics.visibleMeshes} / {diagnostics.totalMeshes}
+              </span>
+            </div>
+            <div className="diagnostics-row">
+              <span className="diagnostics-label">Frustum culled</span>
+              <span className="diagnostics-value">{diagnostics.frustumCulled}</span>
+            </div>
+          </>
+        )}
+      </div>
+      <div className="controls-hint">
+        <span>Drag: Rotate</span>
+        <span>Shift+Drag / Right-click: Pan</span>
+        <span>Scroll: Zoom</span>
+        <span>Double-click: Set pivot</span>
+      </div>
+    </div>
+  )
+}
+
+function getTypeName(typeId: number): string {
+  const typeNames: Record<number, string> = {
+    [WebIFC.IFCWALL]: 'Wall',
+    [WebIFC.IFCWALLSTANDARDCASE]: 'Wall',
+    [WebIFC.IFCSLAB]: 'Slab',
+    [WebIFC.IFCBEAM]: 'Beam',
+    [WebIFC.IFCCOLUMN]: 'Column',
+    [WebIFC.IFCDOOR]: 'Door',
+    [WebIFC.IFCWINDOW]: 'Window',
+    [WebIFC.IFCSTAIR]: 'Stair',
+    [WebIFC.IFCSTAIRFLIGHT]: 'Stair Flight',
+    [WebIFC.IFCRAILING]: 'Railing',
+    [WebIFC.IFCROOF]: 'Roof',
+    [WebIFC.IFCCURTAINWALL]: 'Curtain Wall',
+    [WebIFC.IFCPLATE]: 'Plate',
+    [WebIFC.IFCMEMBER]: 'Member',
+    [WebIFC.IFCFOOTING]: 'Footing',
+    [WebIFC.IFCFURNISHINGELEMENT]: 'Furnishing',
+    [WebIFC.IFCFLOWSEGMENT]: 'Flow Segment',
+    [WebIFC.IFCFLOWFITTING]: 'Flow Fitting',
+    [WebIFC.IFCFLOWTERMINAL]: 'Flow Terminal',
+    [WebIFC.IFCBUILDINGELEMENTPROXY]: 'Building Element',
+    [WebIFC.IFCSPACE]: 'Space',
+    [WebIFC.IFCCOVERING]: 'Covering',
+  }
+  return typeNames[typeId] || `Element (${typeId})`
+}
+
+// Extract metadata from IFC file
+function extractMetadata(ifcApi: WebIFC.IfcAPI, modelID: number): IFCMetadata {
+  const metadata: IFCMetadata = { storeys: [] }
+
+  try {
+    // Get schema version
+    metadata.schema = 'IFC'
+
+    // Get project info
+    const projects = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCPROJECT)
+    if (projects.size() > 0) {
+      const project = ifcApi.GetLine(modelID, projects.get(0))
+      metadata.project = {
+        name: project.Name?.value || project.LongName?.value,
+        description: project.Description?.value,
+        phase: project.Phase?.value
+      }
+    }
+
+    // Get site info
+    const sites = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCSITE)
+    if (sites.size() > 0) {
+      const site = ifcApi.GetLine(modelID, sites.get(0))
+      metadata.site = {
+        name: site.Name?.value || site.LongName?.value,
+        description: site.Description?.value
+      }
+    }
+
+    // Get building info
+    const buildings = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCBUILDING)
+    if (buildings.size() > 0) {
+      const building = ifcApi.GetLine(modelID, buildings.get(0))
+      metadata.building = {
+        name: building.Name?.value || building.LongName?.value,
+        description: building.Description?.value
+      }
+    }
+
+    // Get building storeys with their contained elements
+    const storeys = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCBUILDINGSTOREY)
+
+    // Build a map of storey ID to element IDs using spatial containment relationships
+    const storeyElementsMap = new Map<number, number[]>()
+
+    try {
+      const relContained = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCRELCONTAINEDINSPATIALSTRUCTURE)
+      for (let i = 0; i < relContained.size(); i++) {
+        const rel = ifcApi.GetLine(modelID, relContained.get(i))
+        const spatialStructure = rel.RelatingStructure?.value
+        if (spatialStructure && rel.RelatedElements) {
+          const elementIds: number[] = []
+          for (let j = 0; j < rel.RelatedElements.length; j++) {
+            const elementRef = rel.RelatedElements[j]
+            if (elementRef?.value) {
+              elementIds.push(elementRef.value)
+            }
+          }
+          const existing = storeyElementsMap.get(spatialStructure) || []
+          storeyElementsMap.set(spatialStructure, [...existing, ...elementIds])
+        }
+      }
+    } catch {
+      // Ignore errors parsing relationships
+    }
+
+    for (let i = 0; i < storeys.size(); i++) {
+      const storeyId = storeys.get(i)
+      const storey = ifcApi.GetLine(modelID, storeyId)
+      const name = storey.Name?.value || storey.LongName?.value || `Level ${i + 1}`
+      const elevation = storey.Elevation?.value
+      const elementIds = storeyElementsMap.get(storeyId) || []
+
+      metadata.storeys.push({
+        id: storeyId,
+        name,
+        elevation,
+        elementIds
+      })
+    }
+
+    // Sort storeys by elevation (lowest first)
+    metadata.storeys.sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0))
+
+    // Get owner history for author/organization info
+    const ownerHistories = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCOWNERHISTORY)
+    if (ownerHistories.size() > 0) {
+      const history = ifcApi.GetLine(modelID, ownerHistories.get(0))
+
+      // Get person/organization
+      if (history.OwningUser) {
+        try {
+          const personOrg = ifcApi.GetLine(modelID, history.OwningUser.value)
+          if (personOrg.ThePerson) {
+            const person = ifcApi.GetLine(modelID, personOrg.ThePerson.value)
+            const names = [person.GivenName?.value, person.FamilyName?.value].filter(Boolean)
+            metadata.author = names.join(' ')
+          }
+          if (personOrg.TheOrganization) {
+            const org = ifcApi.GetLine(modelID, personOrg.TheOrganization.value)
+            metadata.organization = org.Name?.value
+          }
+        } catch {
+          // Ignore errors accessing nested properties
+        }
+      }
+
+      // Get application
+      if (history.OwningApplication) {
+        try {
+          const app = ifcApi.GetLine(modelID, history.OwningApplication.value)
+          metadata.application = app.ApplicationFullName?.value || app.ApplicationIdentifier?.value
+        } catch {
+          // Ignore errors
+        }
+      }
+
+      // Get creation date
+      if (history.CreationDate) {
+        const timestamp = history.CreationDate.value
+        if (timestamp) {
+          const date = new Date(timestamp * 1000)
+          metadata.creationDate = date.toLocaleDateString()
+        }
+      }
+    }
+
+    // Get units
+    const unitAssignments = ifcApi.GetLineIDsWithType(modelID, WebIFC.IFCUNITASSIGNMENT)
+    if (unitAssignments.size() > 0) {
+      const assignment = ifcApi.GetLine(modelID, unitAssignments.get(0))
+      metadata.units = {}
+
+      if (assignment.Units) {
+        for (let i = 0; i < assignment.Units.length; i++) {
+          try {
+            const unitRef = assignment.Units[i]
+            const unit = ifcApi.GetLine(modelID, unitRef.value)
+            const unitType = unit.UnitType?.value
+            const name = unit.Name?.value
+
+            if (unitType === 'LENGTHUNIT') {
+              metadata.units.length = name || 'METRE'
+            } else if (unitType === 'AREAUNIT') {
+              metadata.units.area = name || 'SQUARE_METRE'
+            } else if (unitType === 'VOLUMEUNIT') {
+              metadata.units.volume = name || 'CUBIC_METRE'
+            }
+          } catch {
+            // Ignore unit parsing errors
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error extracting metadata:', err)
+  }
+
+  return metadata
+}

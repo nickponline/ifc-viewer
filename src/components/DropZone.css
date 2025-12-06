@@ -1,0 +1,64 @@
+.drop-zone {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  transition: all 0.3s ease;
+}
+
+.drop-zone.dragging {
+  background: linear-gradient(135deg, #1f1f3d 0%, #1a2848 100%);
+}
+
+.drop-zone.dragging .drop-zone-content {
+  border-color: #4a9eff;
+  background: rgba(74, 158, 255, 0.1);
+  transform: scale(1.02);
+}
+
+.drop-zone-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 60px 80px;
+  border: 3px dashed #3a3a5c;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.drop-zone-content:hover {
+  border-color: #4a9eff;
+  background: rgba(74, 158, 255, 0.05);
+}
+
+.drop-icon {
+  width: 80px;
+  height: 80px;
+  color: #4a9eff;
+  margin-bottom: 24px;
+}
+
+.drop-zone-content h2 {
+  color: #fff;
+  font-size: 24px;
+  margin: 0 0 8px 0;
+  font-weight: 500;
+}
+
+.drop-zone-content p {
+  color: #8888aa;
+  font-size: 16px;
+  margin: 0;
+}
+
+.file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
