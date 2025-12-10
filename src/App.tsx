@@ -2,8 +2,7 @@ import { useState, useCallback } from 'react'
 import { IFCViewer } from './components/IFCViewer'
 import { DropZone } from './components/DropZone'
 import { FilterPanel } from './components/FilterPanel'
-import { CameraInfo } from './components/CameraInfo'
-import type { CameraState, ElementCategory, IFCMetadata } from './types'
+import type { ElementCategory, IFCMetadata } from './types'
 import './App.css'
 
 function App() {
@@ -12,15 +11,6 @@ function App() {
   const [categories, setCategories] = useState<ElementCategory[]>([])
   const [metadata, setMetadata] = useState<IFCMetadata>({ storeys: [] })
   const [selectedStorey, setSelectedStorey] = useState<number | null>(null)
-  const [cameraState, setCameraState] = useState<CameraState>({
-    position: { x: 0, y: 0, z: 0 },
-    rotation: [
-      [1, 0, 0, 0],
-      [0, 1, 0, 0],
-      [0, 0, 1, 0],
-      [0, 0, 0, 1]
-    ]
-  })
 
   const handleFileDrop = useCallback((file: File) => {
     const reader = new FileReader()
@@ -55,7 +45,6 @@ function App() {
             ifcData={ifcData}
             categories={categories}
             onCategoriesLoaded={setCategories}
-            onCameraChange={setCameraState}
             onMetadataLoaded={setMetadata}
             selectedStorey={selectedStorey}
             storeys={metadata.storeys}
@@ -68,15 +57,7 @@ function App() {
             metadata={metadata}
             selectedStorey={selectedStorey}
             onStoreySelect={setSelectedStorey}
-            onLoadNew={() => {
-              setIfcData(null)
-              setFileName('')
-              setCategories([])
-              setMetadata({ storeys: [] })
-              setSelectedStorey(null)
-            }}
           />
-          <CameraInfo cameraState={cameraState} />
         </>
       )}
     </div>

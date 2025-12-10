@@ -3,7 +3,7 @@
   top: 20px;
   right: 20px;
   width: 280px;
-  max-height: calc(100vh - 40px);
+  max-height: 70vh;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
   border-radius: 12px;
@@ -160,7 +160,7 @@
 }
 
 .category-list {
-  flex: 1;
+  flex: 0.75;
   overflow-y: auto;
   margin: 0 -16px;
   padding: 0 16px;
@@ -207,22 +207,6 @@
   text-align: center;
   color: #888;
   padding: 20px;
-}
-
-.load-new-btn {
-  margin-top: 12px;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
-  color: #fff;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.load-new-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
 }
 
 /* Information tab styles */

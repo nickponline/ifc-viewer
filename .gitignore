@@ -13,8 +13,10 @@ dist-ssr
 *.local
 
 # IFC sample files (too large for git)
-ifc/
+
 public/ifc/
+public/drawings/
+public/walkthroughs/
 
 # Editor directories and files
 .vscode/*

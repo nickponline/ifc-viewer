@@ -10,7 +10,6 @@ interface FilterPanelProps {
   metadata: IFCMetadata
   selectedStorey: number | null
   onStoreySelect: (storeyId: number | null) => void
-  onLoadNew: () => void
 }
 
 const CATEGORY_NAMES: Record<number, string> = {
@@ -69,8 +68,7 @@ export function FilterPanel({
   fileName,
   metadata,
   selectedStorey,
-  onStoreySelect,
-  onLoadNew
+  onStoreySelect
 }: FilterPanelProps) {
   const [activeTab, setActiveTab] = useState<'elements' | 'info'>('elements')
   const [isCollapsed, setIsCollapsed] = useState(false)
@@ -273,10 +271,6 @@ export function FilterPanel({
           )}
         </div>
       )}
-
-          <button className="load-new-btn" onClick={onLoadNew}>
-            Load New File
-          </button>
         </>
       )}
     </div>
