@@ -438,9 +438,9 @@ export function IFCViewer({
     }
   }, [aligningDrawingId, alignmentPoints, createNumberedSprite])
 
-  // Apply alignment transformation
+  // Apply alignment transformation - transform the MODEL to align with the drawing
   const applyAlignment = useCallback((drawingPoints: THREE.Vector3[]) => {
-    if (!aligningDrawingId || !modelGroupRef.current) return
+    if (!aligningDrawingId || !modelGroupRef.current || !mergedGroupRef.current) return
 
     const drawing = drawings.find(d => d.id === aligningDrawingId)
     if (!drawing) return
@@ -465,7 +465,7 @@ export function IFCViewer({
     modelCentroid.divideScalar(4)
 
     // Calculate scale using edge lengths (average of corresponding edges)
-    // Edge 1-2 and 3-4 (one pair of parallel sides)
+    // Scale factor: drawing / model (we're scaling the model to fit the drawing)
     const drawingEdge12 = new THREE.Vector2(
       drawingPoints[1].x - drawingPoints[0].x,
       drawingPoints[1].z - drawingPoints[0].z
@@ -483,7 +483,6 @@ export function IFCViewer({
       modelCorners[3].z - modelCorners[2].z
     ).length()
 
-    // Edge 2-3 and 4-1 (other pair of parallel sides)
     const drawingEdge23 = new THREE.Vector2(
       drawingPoints[2].x - drawingPoints[1].x,
       drawingPoints[2].z - drawingPoints[1].z
@@ -501,10 +500,9 @@ export function IFCViewer({
       modelCorners[0].z - modelCorners[3].z
     ).length()
 
-    // Average scale from all edges
     const drawingAvgEdge = (drawingEdge12 + drawingEdge34 + drawingEdge23 + drawingEdge41) / 4
     const modelAvgEdge = (modelEdge12 + modelEdge34 + modelEdge23 + modelEdge41) / 4
-    const scale = modelAvgEdge / drawingAvgEdge
+    const scale = drawingAvgEdge / modelAvgEdge  // Inverted: scale model to match drawing
 
     // Calculate rotation using the edge from point 1 to point 2
     const drawingVec = new THREE.Vector2(
@@ -516,49 +514,126 @@ export function IFCViewer({
       modelCorners[1].z - modelCorners[0].z
     ).normalize()
 
-    // Angle between vectors (in XZ plane, rotating around Y axis)
-    const angle = Math.atan2(modelVec.y, modelVec.x) - Math.atan2(drawingVec.y, drawingVec.x)
+    // Angle to rotate model to match drawing orientation
+    const angle = Math.atan2(drawingVec.y, drawingVec.x) - Math.atan2(modelVec.y, modelVec.x)
 
-    const drawingMesh = drawing.mesh
+    // Create a parent group to apply transformations to both model groups
+    const modelGroup = modelGroupRef.current
+    const mergedGroup = mergedGroupRef.current
 
-    // Reset drawing to identity transform first
-    drawingMesh.scale.set(1, 1, 1)
-    drawingMesh.rotation.set(-Math.PI / 2, 0, 0) // Reset to horizontal plane rotation
-    drawingMesh.updateMatrixWorld(true)
+    // Apply scale to both groups
+    modelGroup.scale.multiplyScalar(scale)
+    mergedGroup.scale.multiplyScalar(scale)
 
-    // Get the drawing's current world position (its center)
-    const drawingWorldPos = new THREE.Vector3()
-    drawingMesh.getWorldPosition(drawingWorldPos)
+    // Apply rotation around Y axis, pivoting around model centroid
+    // First translate to origin, rotate, then translate back
+    modelGroup.position.sub(modelCentroid)
+    modelGroup.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), angle)
+    modelGroup.position.add(modelCentroid)
+    modelGroup.rotation.y += angle
 
-    // Calculate where the drawing centroid is relative to the mesh center
-    // The clicked points are in world space, the drawing mesh center is at drawingWorldPos
-    const drawingCentroidOffset = new THREE.Vector3(
-      drawingCentroid.x - drawingWorldPos.x,
-      0,
-      drawingCentroid.z - drawingWorldPos.z
-    )
+    mergedGroup.position.sub(modelCentroid)
+    mergedGroup.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), angle)
+    mergedGroup.position.add(modelCentroid)
+    mergedGroup.rotation.y += angle
 
-    // Apply scale
-    drawingMesh.scale.multiplyScalar(scale)
-
-    // Apply rotation around Y axis (the drawing is already horizontal, so rotate around Y)
-    drawingMesh.rotation.y = angle
-
-    // After scale and rotation, calculate where the centroid would end up
-    const scaledRotatedOffset = drawingCentroidOffset.clone()
-      .multiplyScalar(scale)
+    // After rotation and scale, recalculate where the model centroid ends up
+    // The model centroid after scale (relative to origin) and rotation
+    const scaledModelCentroid = modelCentroid.clone().multiplyScalar(scale)
+    const rotatedScaledModelCentroid = scaledModelCentroid.clone()
       .applyAxisAngle(new THREE.Vector3(0, 1, 0), angle)
 
-    // Position the mesh so the drawing centroid aligns with model centroid
-    drawingMesh.position.x = modelCentroid.x - scaledRotatedOffset.x
-    drawingMesh.position.z = modelCentroid.z - scaledRotatedOffset.z
+    // Translate model so its centroid aligns with drawing centroid
+    const translation = new THREE.Vector3(
+      drawingCentroid.x - rotatedScaledModelCentroid.x,
+      0,
+      drawingCentroid.z - rotatedScaledModelCentroid.z
+    )
+    modelGroup.position.add(translation)
+    mergedGroup.position.add(translation)
 
-    // Position drawing just below the model's bottom so it sits exactly on top
-    drawingMesh.position.y = minY - 0.01
+    // Adjust Y position so model sits on the drawing
+    const drawingY = drawing.mesh.position.y
+    const newModelBox = new THREE.Box3().setFromObject(modelGroup)
+    const yOffset = drawingY - newModelBox.min.y + 0.01
+    modelGroup.position.y += yOffset
+    mergedGroup.position.y += yOffset
+
+    // Update bounding box helper and corner labels
+    if (boundingBoxHelperRef.current) {
+      sceneRef.current?.remove(boundingBoxHelperRef.current)
+      boundingBoxHelperRef.current.geometry.dispose()
+    }
+    cornerLabelsRef.current.forEach(label => {
+      sceneRef.current?.remove(label)
+      label.material.dispose()
+    })
+    cornerLabelsRef.current = []
+
+    // Recreate bounding box and labels at new position
+    const newBox = new THREE.Box3().setFromObject(modelGroup)
+    const newCenter = newBox.getCenter(new THREE.Vector3())
+    const newSize = newBox.getSize(new THREE.Vector3())
+    const maxDim = Math.max(newSize.x, newSize.y, newSize.z)
+
+    const boxGeometry = new THREE.BoxGeometry(newSize.x, newSize.y, newSize.z)
+    const edges = new THREE.EdgesGeometry(boxGeometry)
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xff0000 })
+    const boundingBoxHelper = new THREE.LineSegments(edges, lineMaterial)
+    boundingBoxHelper.position.copy(newCenter)
+    boundingBoxHelper.visible = showBoundingBox
+    sceneRef.current?.add(boundingBoxHelper)
+    boundingBoxHelperRef.current = boundingBoxHelper
+
+    // Recreate corner labels
+    const newMinY = newBox.min.y
+    const newCorners = [
+      new THREE.Vector3(newBox.min.x, newMinY, newBox.min.z),
+      new THREE.Vector3(newBox.max.x, newMinY, newBox.min.z),
+      new THREE.Vector3(newBox.max.x, newMinY, newBox.max.z),
+      new THREE.Vector3(newBox.min.x, newMinY, newBox.max.z),
+    ]
+
+    const createTextSprite = (text: string): THREE.Sprite => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 64
+      canvas.height = 64
+      const ctx = canvas.getContext('2d')!
+      ctx.strokeStyle = '#000000'
+      ctx.lineWidth = 6
+      ctx.font = 'bold 48px Arial'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.strokeText(text, 32, 32)
+      ctx.fillStyle = '#ff0000'
+      ctx.fillText(text, 32, 32)
+      const texture = new THREE.CanvasTexture(canvas)
+      const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false
+      })
+      const sprite = new THREE.Sprite(material)
+      sprite.scale.set(maxDim * 0.05, maxDim * 0.05, 1)
+      sprite.renderOrder = 999
+      return sprite
+    }
+
+    newCorners.forEach((corner, index) => {
+      const sprite = createTextSprite(String(index + 1))
+      sprite.position.copy(corner)
+      sprite.visible = showBoundingBox
+      sceneRef.current?.add(sprite)
+      cornerLabelsRef.current.push(sprite)
+    })
+
+    // Update model size reference for zoom limits
+    modelSizeRef.current = maxDim
 
     // Clean up alignment mode
     handleCancelAlign()
-  }, [aligningDrawingId, drawings, handleCancelAlign])
+  }, [aligningDrawingId, drawings, handleCancelAlign, showBoundingBox])
 
   // Camera control state
   const isMouseDownRef = useRef(false)
@@ -1397,13 +1472,12 @@ export function IFCViewer({
       {aligningDrawingId && (
         <div className="alignment-overlay">
           <div className="alignment-instructions">
-            <h3>Align Drawing</h3>
-            <p>Click the 4 corners on the drawing matching the red numbered corners (1-4) on the model.</p>
-            <p className="alignment-progress">
+            <span className="alignment-title">Align Model</span>
+            <span className="alignment-progress">
               {alignmentPoints.length < 4
-                ? `Click corner ${alignmentPoints.length + 1}`
+                ? `Point ${alignmentPoints.length + 1}/4`
                 : 'Applying...'}
-            </p>
+            </span>
             <button className="cancel-align-btn" onClick={handleCancelAlign}>
               Cancel
             </button>

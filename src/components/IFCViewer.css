@@ -273,43 +273,39 @@
 }
 
 .alignment-instructions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(10px);
   border: 1px solid #4a9eff;
-  border-radius: 12px;
-  padding: 16px 24px;
-  text-align: center;
+  border-radius: 20px;
+  padding: 8px 16px;
   pointer-events: auto;
 }
 
-.alignment-instructions h3 {
+.alignment-title {
   color: #4a9eff;
-  font-size: 16px;
-  margin: 0 0 8px 0;
-}
-
-.alignment-instructions p {
-  color: #fff;
   font-size: 13px;
-  margin: 0 0 8px 0;
-}
-
-.alignment-progress {
-  color: #4a9eff !important;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-weight: 600;
 }
 
+.alignment-progress {
+  color: #fff;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .cancel-align-btn {
-  padding: 8px 16px;
+  padding: 4px 10px;
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 6px;
-  color: #fff;
-  font-size: 12px;
+  border-radius: 4px;
+  color: #888;
+  font-size: 11px;
   cursor: pointer;
   transition: all 0.2s ease;
-  margin-top: 8px;
 }
 
 .cancel-align-btn:hover {

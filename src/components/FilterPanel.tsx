@@ -73,32 +73,48 @@ export function FilterPanel({
   onLoadNew
 }: FilterPanelProps) {
   const [activeTab, setActiveTab] = useState<'elements' | 'info'>('elements')
+  const [isCollapsed, setIsCollapsed] = useState(false)
   const visibleCount = categories.filter(c => c.visible).length
   const allVisible = visibleCount === categories.length
   const noneVisible = visibleCount === 0
 
   return (
-    <div className="filter-panel">
+    <div className={`filter-panel ${isCollapsed ? 'collapsed' : ''}`}>
       <div className="filter-header">
         <span className="file-name" title={fileName}>{fileName}</span>
-      </div>
-
-      <div className="tab-bar">
         <button
-          className={`tab-btn ${activeTab === 'elements' ? 'active' : ''}`}
-          onClick={() => setActiveTab('elements')}
+          className="collapse-btn"
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          title={isCollapsed ? 'Expand panel' : 'Collapse panel'}
         >
-          Elements
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'info' ? 'active' : ''}`}
-          onClick={() => setActiveTab('info')}
-        >
-          Information
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            {isCollapsed ? (
+              <polyline points="15,18 9,12 15,6" />
+            ) : (
+              <polyline points="9,18 15,12 9,6" />
+            )}
+          </svg>
         </button>
       </div>
 
-      {activeTab === 'elements' ? (
+      {!isCollapsed && (
+        <>
+          <div className="tab-bar">
+            <button
+              className={`tab-btn ${activeTab === 'elements' ? 'active' : ''}`}
+              onClick={() => setActiveTab('elements')}
+            >
+              Elements
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'info' ? 'active' : ''}`}
+              onClick={() => setActiveTab('info')}
+            >
+              Information
+            </button>
+          </div>
+
+          {activeTab === 'elements' ? (
         <>
           {metadata.storeys.length > 0 && (
             <div className="storey-filter">
@@ -258,9 +274,11 @@ export function FilterPanel({
         </div>
       )}
 
-      <button className="load-new-btn" onClick={onLoadNew}>
-        Load New File
-      </button>
+          <button className="load-new-btn" onClick={onLoadNew}>
+            Load New File
+          </button>
+        </>
+      )}
     </div>
   )
 }
