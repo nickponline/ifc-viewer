@@ -15,38 +15,22 @@ interface SampleFolder {
 // Sample IFC folders and files available in public/ifc
 const SAMPLE_FOLDERS: SampleFolder[] = [
   {
-    name: 'sample',
-    files: [
-      { name: 'cafe.ifc', path: '/ifc/sample/cafe.ifc', size: 710115 },
-    ]
-  },
-  {
-    name: 'uno',
-    files: [
-      { name: 'UNO2A-EYD-STRU_IFC4.ifc', path: '/ifc/uno/UNO2A-EYD-STRU_IFC4.ifc', size: 26874688 },
-      { name: 'UNO3A-DC-ARCH.ifc', path: '/ifc/uno/UNO3A-DC-ARCH.ifc', size: 50489311 },
-      { name: 'UNO3A-EYD.ifc', path: '/ifc/uno/UNO3A-EYD.ifc', size: 89538452 },
-      { name: 'UNO3A-MYD-ALL.ifc', path: '/ifc/uno/UNO3A-MYD-ALL.ifc', size: 46021080 },
-      { name: 'UNO3A-MYD-PRODUCT-ALL.ifc', path: '/ifc/uno/UNO3A-MYD-PRODUCT-ALL.ifc', size: 189584831 },
-    ]
-  },
-  {
     name: 'lnr',
     files: [
+      // { name: 'LNR4A-ASB-DC-CEG-PRECAST.ifc', path: '/ifc/lnr/LNR4A-ASB-DC-CEG-PRECAST.ifc', size: 133371797 },
+      // { name: 'LNR4A-DC-CEG-PRECAST.ifc', path: '/ifc/lnr/LNR4A-DC-CEG-PRECAST.ifc', size: 146947484 },
       { name: 'LNR-4A-C-UTILITY-DRY.ifc', path: '/ifc/lnr/LNR-4A-C-UTILITY-DRY.ifc', size: 79161686 },
       { name: 'LNR-4A-C-UTILITY.ifc', path: '/ifc/lnr/LNR-4A-C-UTILITY.ifc', size: 79161686 },
       { name: 'LNR4A-ALL-BCC-STRU.ifc', path: '/ifc/lnr/LNR4A-ALL-BCC-STRU.ifc', size: 6923688 },
-      { name: 'LNR4A-ASB-DC-CEG-PRECAST.ifc', path: '/ifc/lnr/LNR4A-ASB-DC-CEG-PRECAST.ifc', size: 133371797 },
       { name: 'LNR4A-ASB-UND-DHG-DWTR.ifc', path: '/ifc/lnr/LNR4A-ASB-UND-DHG-DWTR.ifc', size: 778469 },
       { name: 'LNR4A-ASB-UND-DHG-FWTR.ifc', path: '/ifc/lnr/LNR4A-ASB-UND-DHG-FWTR.ifc', size: 3298736 },
       { name: 'LNR4A-ASB-UND-DHG-SSWR.ifc', path: '/ifc/lnr/LNR4A-ASB-UND-DHG-SSWR.ifc', size: 2177873 },
       { name: 'LNR4A-ASB-UND-DHG-STRM.ifc', path: '/ifc/lnr/LNR4A-ASB-UND-DHG-STRM.ifc', size: 2295876 },
       { name: 'LNR4A-DC-ARCH_detached.ifc', path: '/ifc/lnr/LNR4A-DC-ARCH_detached.ifc', size: 83517068 },
-      { name: 'LNR4A-DC-CEG-PRECAST.ifc', path: '/ifc/lnr/LNR4A-DC-CEG-PRECAST.ifc', size: 146947484 },
+      { name: 'LNR4A-DC-STRU.ifc', path: '/ifc/lnr/LNR4A-DC-STRU.ifc', size: 23741088 },
       { name: 'LNR4A-DC-STRU_no_deck.ifc', path: '/ifc/lnr/LNR4A-DC-STRU_no_deck.ifc', size: 23735077 },
       { name: 'LNR4A-DC-STRU_Shell_1.ifc', path: '/ifc/lnr/LNR4A-DC-STRU_Shell_1.ifc', size: 12330677 },
       { name: 'LNR4A-DC-STRU_Shell_2.ifc', path: '/ifc/lnr/LNR4A-DC-STRU_Shell_2.ifc', size: 1685885 },
-      { name: 'LNR4A-DC-STRU.ifc', path: '/ifc/lnr/LNR4A-DC-STRU.ifc', size: 23741088 },
       { name: 'LNR4A-DC-WBI-GEO.ifc', path: '/ifc/lnr/LNR4A-DC-WBI-GEO.ifc', size: 185034 },
       { name: 'LNR4A-DCH-EAS-HVAC.ifc', path: '/ifc/lnr/LNR4A-DCH-EAS-HVAC.ifc', size: 61896163 },
       { name: 'LNR4A-DCH-EAS-MECH.ifc', path: '/ifc/lnr/LNR4A-DCH-EAS-MECH.ifc', size: 136500966 },
@@ -69,6 +53,22 @@ const SAMPLE_FOLDERS: SampleFolder[] = [
       { name: 'LNR4A-UND-DHG-SSWR.ifc', path: '/ifc/lnr/LNR4A-UND-DHG-SSWR.ifc', size: 1761835 },
       { name: 'LNR4A-UND-DHG-STRM.ifc', path: '/ifc/lnr/LNR4A-UND-DHG-STRM.ifc', size: 3849384 },
       { name: 'LNR4A-UND-MMR-ELEC.ifc', path: '/ifc/lnr/LNR4A-UND-MMR-ELEC.ifc', size: 101742957 },
+    ]
+  },
+  {
+    name: 'sample',
+    files: [
+      { name: 'cafe.ifc', path: '/ifc/sample/cafe.ifc', size: 710115 },
+    ]
+  },
+  {
+    name: 'uno',
+    files: [
+      { name: 'UNO2A-EYD-STRU_IFC4.ifc', path: '/ifc/uno/UNO2A-EYD-STRU_IFC4.ifc', size: 26874688 },
+      { name: 'UNO3A-DC-ARCH.ifc', path: '/ifc/uno/UNO3A-DC-ARCH.ifc', size: 50489311 },
+      { name: 'UNO3A-EYD.ifc', path: '/ifc/uno/UNO3A-EYD.ifc', size: 89538452 },
+      { name: 'UNO3A-MYD-ALL.ifc', path: '/ifc/uno/UNO3A-MYD-ALL.ifc', size: 46021080 },
+      { name: 'UNO3A-MYD-PRODUCT-ALL.ifc', path: '/ifc/uno/UNO3A-MYD-PRODUCT-ALL.ifc', size: 189584831 },
     ]
   },
 ]

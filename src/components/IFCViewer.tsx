@@ -38,20 +38,6 @@ export function IFCViewer({
   const frameCountRef = useRef<number>(0)
   const fpsUpdateIntervalRef = useRef<number>(0)
 
-  // Diagnostics state
-  const [diagnostics, setDiagnostics] = useState({
-    fps: 0,
-    triangles: 0,
-    drawCalls: 0,
-    geometries: 0,
-    textures: 0,
-    // Performance mode stats
-    totalMeshes: 0,
-    visibleMeshes: 0,
-    // Perf mode specific
-    mergedMeshes: 0,
-    pixelRatio: 1
-  })
 
   // High performance mode
   const [performanceMode, setPerformanceMode] = useState(true)
@@ -85,6 +71,12 @@ export function IFCViewer({
   const alignmentMarkersRef = useRef<THREE.Mesh[]>([])
   const alignmentLinesRef = useRef<THREE.Line | null>(null)
   const alignmentConnectingLinesRef = useRef<THREE.Line[]>([])
+
+  // Fisheye/360 mode state
+  const [fisheyeMode, setFisheyeMode] = useState<'off' | 'selecting' | 'viewing'>('off')
+  const [fisheyeImage, setFisheyeImage] = useState<string | null>(null)
+  const cubeRenderTargetRef = useRef<THREE.WebGLCubeRenderTarget | null>(null)
+  const cubeCameraRef = useRef<THREE.CubeCamera | null>(null)
 
   // Function to rebuild merged meshes based on current visibility
   const rebuildMergedMeshes = useCallback(() => {
@@ -635,6 +627,194 @@ export function IFCViewer({
     handleCancelAlign()
   }, [aligningDrawingId, drawings, handleCancelAlign, showBoundingBox])
 
+  // Capture 360 view from a point and convert to equirectangular
+  const captureFisheyeView = useCallback((point: THREE.Vector3) => {
+    if (!sceneRef.current || !rendererRef.current) return
+
+    const scene = sceneRef.current
+    const renderer = rendererRef.current
+
+    // Create cube render target if not exists
+    const cubeSize = 1024
+    if (!cubeRenderTargetRef.current) {
+      cubeRenderTargetRef.current = new THREE.WebGLCubeRenderTarget(cubeSize, {
+        format: THREE.RGBAFormat,
+        generateMipmaps: false
+      })
+    }
+
+    // Create cube camera
+    const cubeCamera = new THREE.CubeCamera(0.1, 10000, cubeRenderTargetRef.current)
+    cubeCamera.position.copy(point)
+    cubeCameraRef.current = cubeCamera
+
+    // Temporarily show model group for rendering (in case perf mode has it hidden)
+    const wasModelHidden = modelGroupRef.current?.visible === false
+    const wasMergedVisible = mergedGroupRef.current?.visible === true
+    if (modelGroupRef.current) modelGroupRef.current.visible = true
+    if (mergedGroupRef.current) mergedGroupRef.current.visible = false
+
+    // Update cube camera to capture all 6 faces
+    cubeCamera.update(renderer, scene)
+
+    // Restore visibility
+    if (wasModelHidden && modelGroupRef.current) modelGroupRef.current.visible = false
+    if (wasMergedVisible && mergedGroupRef.current) mergedGroupRef.current.visible = true
+
+    // Convert cubemap to equirectangular
+    const equiWidth = 2048
+    const equiHeight = 1024
+
+    // Create a canvas to draw the equirectangular image
+    const canvas = document.createElement('canvas')
+    canvas.width = equiWidth
+    canvas.height = equiHeight
+    const ctx = canvas.getContext('2d')!
+
+    // Read each cube face
+    const faces: ImageData[] = []
+
+    // We need to read pixels from each face
+    const readBuffer = new Uint8Array(cubeSize * cubeSize * 4)
+
+    for (let face = 0; face < 6; face++) {
+      // Create a temporary render target for reading
+      const tempTarget = new THREE.WebGLRenderTarget(cubeSize, cubeSize)
+
+      // Create a scene with a cube face
+      const tempScene = new THREE.Scene()
+      const tempCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+
+      // Create material using the cubemap texture
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          cubemap: { value: cubeRenderTargetRef.current!.texture },
+          face: { value: face }
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = vec4(position.xy, 0.0, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform samplerCube cubemap;
+          uniform int face;
+          varying vec2 vUv;
+          void main() {
+            vec2 uv = vUv * 2.0 - 1.0;
+            vec3 dir;
+            if (face == 0) dir = vec3(1.0, -uv.y, -uv.x);      // +X
+            else if (face == 1) dir = vec3(-1.0, -uv.y, uv.x); // -X
+            else if (face == 2) dir = vec3(uv.x, 1.0, uv.y);   // +Y
+            else if (face == 3) dir = vec3(uv.x, -1.0, -uv.y); // -Y
+            else if (face == 4) dir = vec3(uv.x, -uv.y, 1.0);  // +Z
+            else dir = vec3(-uv.x, -uv.y, -1.0);               // -Z
+            gl_FragColor = textureCube(cubemap, normalize(dir));
+          }
+        `
+      })
+
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material)
+      tempScene.add(quad)
+
+      renderer.setRenderTarget(tempTarget)
+      renderer.render(tempScene, tempCamera)
+
+      renderer.readRenderTargetPixels(tempTarget, 0, 0, cubeSize, cubeSize, readBuffer)
+      faces.push(new ImageData(new Uint8ClampedArray(readBuffer), cubeSize, cubeSize))
+
+      tempTarget.dispose()
+      material.dispose()
+      quad.geometry.dispose()
+    }
+
+    renderer.setRenderTarget(null)
+
+    // Convert cubemap faces to equirectangular
+    const equiData = ctx.createImageData(equiWidth, equiHeight)
+
+    for (let y = 0; y < equiHeight; y++) {
+      for (let x = 0; x < equiWidth; x++) {
+        // Convert pixel to spherical coordinates
+        const theta = (x / equiWidth) * 2 * Math.PI - Math.PI // -PI to PI (longitude)
+        const phi = (y / equiHeight) * Math.PI // 0 to PI (latitude from top)
+
+        // Convert to 3D direction
+        const dirX = Math.sin(phi) * Math.sin(theta)
+        const dirY = Math.cos(phi)
+        const dirZ = Math.sin(phi) * Math.cos(theta)
+
+        // Find which cube face and UV coordinates
+        const absX = Math.abs(dirX)
+        const absY = Math.abs(dirY)
+        const absZ = Math.abs(dirZ)
+
+        let faceIndex: number
+        let u: number, v: number
+
+        if (absX >= absY && absX >= absZ) {
+          if (dirX > 0) {
+            faceIndex = 0 // +X
+            u = -dirZ / absX
+            v = -dirY / absX
+          } else {
+            faceIndex = 1 // -X
+            u = dirZ / absX
+            v = -dirY / absX
+          }
+        } else if (absY >= absX && absY >= absZ) {
+          if (dirY > 0) {
+            faceIndex = 2 // +Y
+            u = dirX / absY
+            v = dirZ / absY
+          } else {
+            faceIndex = 3 // -Y
+            u = dirX / absY
+            v = -dirZ / absY
+          }
+        } else {
+          if (dirZ > 0) {
+            faceIndex = 4 // +Z
+            u = dirX / absZ
+            v = -dirY / absZ
+          } else {
+            faceIndex = 5 // -Z
+            u = -dirX / absZ
+            v = -dirY / absZ
+          }
+        }
+
+        // Convert UV from [-1,1] to [0, cubeSize-1]
+        const pixelX = Math.floor(((u + 1) / 2) * (cubeSize - 1))
+        const pixelY = Math.floor(((v + 1) / 2) * (cubeSize - 1))
+
+        // Sample from face
+        const faceData = faces[faceIndex]
+        const srcIdx = (pixelY * cubeSize + pixelX) * 4
+        const dstIdx = (y * equiWidth + x) * 4
+
+        equiData.data[dstIdx] = faceData.data[srcIdx]
+        equiData.data[dstIdx + 1] = faceData.data[srcIdx + 1]
+        equiData.data[dstIdx + 2] = faceData.data[srcIdx + 2]
+        equiData.data[dstIdx + 3] = 255
+      }
+    }
+
+    ctx.putImageData(equiData, 0, 0)
+
+    // Convert to data URL
+    const dataUrl = canvas.toDataURL('image/png')
+    setFisheyeImage(dataUrl)
+    setFisheyeMode('viewing')
+  }, [])
+
+  // Handle fisheye click on model
+  const handleFisheyeClick = useCallback((point: THREE.Vector3) => {
+    captureFisheyeView(point)
+  }, [captureFisheyeView])
+
   // Camera control state
   const isMouseDownRef = useRef(false)
   const isPanningRef = useRef(false)
@@ -779,20 +959,6 @@ export function IFCViewer({
 
       // Update diagnostics every 500ms
       if (fpsUpdateIntervalRef.current >= 500) {
-        const fps = Math.round((frameCountRef.current * 1000) / fpsUpdateIntervalRef.current)
-        const info = renderer.info
-        const mergedCount = mergedGroupRef.current?.children.length || 0
-        setDiagnostics({
-          fps,
-          triangles: info.render.triangles,
-          drawCalls: info.render.calls,
-          geometries: info.memory.geometries,
-          textures: info.memory.textures,
-          totalMeshes: mergedCount,
-          visibleMeshes: mergedCount,
-          mergedMeshes: mergedCount,
-          pixelRatio: renderer.getPixelRatio()
-        })
         frameCountRef.current = 0
         fpsUpdateIntervalRef.current = 0
       }
@@ -909,11 +1075,7 @@ export function IFCViewer({
     }
 
     const handleClick = (e: MouseEvent) => {
-      // Only handle clicks in alignment mode
-      if (!aligningDrawingId || !cameraRef.current || !containerRef.current) return
-
-      const drawing = drawings.find(d => d.id === aligningDrawingId)
-      if (!drawing) return
+      if (!cameraRef.current || !containerRef.current) return
 
       const rect = containerRef.current.getBoundingClientRect()
       const mouse = new THREE.Vector2(
@@ -921,11 +1083,39 @@ export function IFCViewer({
         -((e.clientY - rect.top) / rect.height) * 2 + 1
       )
 
-      raycasterRef.current.setFromCamera(mouse, cameraRef.current)
-      const intersects = raycasterRef.current.intersectObject(drawing.mesh, false)
+      // Handle fisheye mode clicks
+      if (fisheyeMode === 'selecting' && modelGroupRef.current) {
+        raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+        // Try to intersect with visible geometry
+        const targets = mergedGroupRef.current?.visible
+          ? mergedGroupRef.current
+          : modelGroupRef.current
+        const intersects = raycasterRef.current.intersectObject(targets, true)
 
-      if (intersects.length > 0) {
-        handleAlignmentClick(intersects[0].point)
+        if (intersects.length > 0) {
+          // Move point slightly inside the model (offset along normal or just a bit toward camera)
+          const hitPoint = intersects[0].point.clone()
+          const normal = intersects[0].face?.normal
+          if (normal) {
+            // Move point along the face normal to be inside the space
+            hitPoint.add(normal.clone().multiplyScalar(0.5))
+          }
+          handleFisheyeClick(hitPoint)
+        }
+        return
+      }
+
+      // Handle alignment mode clicks
+      if (aligningDrawingId) {
+        const drawing = drawings.find(d => d.id === aligningDrawingId)
+        if (!drawing) return
+
+        raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+        const intersects = raycasterRef.current.intersectObject(drawing.mesh, false)
+
+        if (intersects.length > 0) {
+          handleAlignmentClick(intersects[0].point)
+        }
       }
     }
 
@@ -948,7 +1138,7 @@ export function IFCViewer({
       container.removeEventListener('contextmenu', handleContextMenu)
       container.removeEventListener('dblclick', handleDoubleClick)
     }
-  }, [updateCameraFromSpherical, updatePivotMarker, aligningDrawingId, drawings, handleAlignmentClick])
+  }, [updateCameraFromSpherical, updatePivotMarker, aligningDrawingId, drawings, handleAlignmentClick, fisheyeMode, handleFisheyeClick])
 
   // Load IFC data
   useEffect(() => {
@@ -996,7 +1186,8 @@ export function IFCViewer({
       const collectedMeshes: MeshData[] = []
       let collectCount = 0
 
-      ifcApi.StreamAllMeshes(modelID, (mesh) => {
+      let lastUpdateCount = 0
+      ifcApi.StreamAllMeshes(modelID, async (mesh) => {
         const expressID = mesh.expressID
 
         // Get element type
@@ -1044,8 +1235,10 @@ export function IFCViewer({
 
         // Update progress (will batch but shows final count)
         collectCount++
-        if (collectCount % 100 === 0) {
+        if (collectCount % 100 === 0 && collectCount !== lastUpdateCount) {
+          lastUpdateCount = collectCount
           setLoadingState({ loading: true, stage: 'Collecting meshes...', meshCount: collectCount, totalMeshes: 0 })
+          await new Promise(resolve => setTimeout(resolve, 0))
         }
       })
 
@@ -1148,11 +1341,6 @@ export function IFCViewer({
           try {
             let merged = mergeGeometries(geometries, false)
             if (merged) {
-              const originalVertexCount = merged.attributes.position.count
-              const originalTriCount = merged.index ? merged.index.count / 3 : originalVertexCount / 3
-
-             
-
               const material = new THREE.MeshPhongMaterial({
                 color,
                 opacity,
@@ -1271,7 +1459,7 @@ export function IFCViewer({
       console.log('Categories:', categoriesArray.length)
       onCategoriesLoaded(categoriesArray)
 
-      setLoadingState({ loading: false, stage: 'Complete', meshCount })
+      setLoadingState({ loading: false, stage: 'Complete', meshCount, totalMeshes: meshCount })
     }
 
     loadIFC().catch(err => {
@@ -1339,29 +1527,6 @@ export function IFCViewer({
         </div>
       )}
       <div className="diagnostics-panel">
-        <div className="diagnostics-row">
-          <span className="diagnostics-label">FPS</span>
-          <span className="diagnostics-value">{diagnostics.fps}</span>
-        </div>
-        <div className="diagnostics-row">
-          <span className="diagnostics-label">Triangles</span>
-          <span className="diagnostics-value">{diagnostics.triangles.toLocaleString()}</span>
-        </div>
-        <div className="diagnostics-row">
-          <span className="diagnostics-label">Draw calls</span>
-          <span className="diagnostics-value">{diagnostics.drawCalls}</span>
-        </div>
-        <div className="diagnostics-row">
-          <span className="diagnostics-label">Geometries</span>
-          <span className="diagnostics-value">{diagnostics.geometries}</span>
-        </div>
-        <div className="diagnostics-row">
-          <span className="diagnostics-label">Textures</span>
-          <span className="diagnostics-value">{diagnostics.textures}</span>
-        </div>
-
-        <div className="diagnostics-divider" />
-
         <button
           className={`perf-mode-toggle ${performanceMode ? 'active' : ''}`}
           onClick={() => setPerformanceMode(!performanceMode)}
@@ -1369,28 +1534,38 @@ export function IFCViewer({
           {performanceMode ? 'Perf Mode ON' : 'Perf Mode OFF'}
         </button>
 
-        {performanceMode && (
-          <>
-            <div className="diagnostics-row">
-              <span className="diagnostics-label">Pixel ratio</span>
-              <span className="diagnostics-value">{diagnostics.pixelRatio.toFixed(1)}</span>
-            </div>
-            <div className="diagnostics-row">
-              <span className="diagnostics-label">Merged meshes</span>
-              <span className="diagnostics-value">{diagnostics.mergedMeshes}</span>
-            </div>
-          </>
-        )}
-
-        <div className="diagnostics-divider" />
-
         <button
           className={`perf-mode-toggle ${showBoundingBox ? 'active' : ''}`}
           onClick={() => setShowBoundingBox(!showBoundingBox)}
         >
           {showBoundingBox ? 'Bounds ON' : 'Bounds OFF'}
         </button>
+
+        <button
+          className={`perf-mode-toggle ${fisheyeMode !== 'off' ? 'active' : ''}`}
+          onClick={() => {
+            if (fisheyeMode === 'off') {
+              setFisheyeMode('selecting')
+            } else {
+              setFisheyeMode('off')
+              setFisheyeImage(null)
+            }
+          }}
+        >
+          {fisheyeMode === 'off' ? 'Fisheye' : fisheyeMode === 'selecting' ? 'Click Model...' : 'Exit Fisheye'}
+        </button>
       </div>
+
+      {/* Fisheye view overlay */}
+      {fisheyeMode === 'viewing' && fisheyeImage && (
+        <div className="fisheye-overlay" onClick={() => {
+          setFisheyeMode('off')
+          setFisheyeImage(null)
+        }}>
+          <img src={fisheyeImage} alt="360 View" className="fisheye-image" />
+          <div className="fisheye-hint">Click anywhere to return to model view</div>
+        </div>
+      )}
 
       {/* Drawing planes panel */}
       <div className="drawings-panel">

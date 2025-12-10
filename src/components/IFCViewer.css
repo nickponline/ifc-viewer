@@ -314,6 +314,32 @@
   color: #ff4a4a;
 }
 
+/* Fisheye overlay */
+.fisheye-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  cursor: pointer;
+}
+
+.fisheye-image {
+  max-width: 100%;
+  max-height: calc(100vh - 60px);
+  object-fit: contain;
+}
+
+.fisheye-hint {
+  position: absolute;
+  bottom: 20px;
+  color: #888;
+  font-size: 13px;
+}
+
 /* Responsive styles */
 @media (max-width: 768px) {
   .controls-hint {
