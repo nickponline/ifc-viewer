@@ -7,4 +7,7 @@ export default defineConfig({
     exclude: ['web-ifc']
   },
   assetsInclude: ['**/*.wasm'],
+  server: {
+    allowedHosts: ['0c93aacc500a.ngrok-free.app']
+  }
 })

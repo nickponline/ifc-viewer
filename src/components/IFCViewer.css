@@ -132,6 +132,32 @@
   color: #4a9eff;
 }
 
+.camera-type-toggle {
+  width: 100%;
+  padding: 8px 12px;
+  margin: 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #888;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.camera-type-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.camera-type-toggle.active {
+  background: rgba(255, 140, 0, 0.2);
+  border-color: #ff8c00;
+  color: #ff8c00;
+}
+
 .loading-overlay {
   position: fixed;
   inset: 0;
@@ -940,6 +966,18 @@
 
 .camera-picker-item.loading {
   opacity: 0.7;
+}
+
+.camera-picker-item.loaded {
+  opacity: 0.5;
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.camera-picker-item.loaded::after {
+  content: '✓';
+  color: #4caf50;
+  font-size: 12px;
+  margin-left: auto;
 }
 
 .camera-picker-item svg {

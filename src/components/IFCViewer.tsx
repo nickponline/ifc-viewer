@@ -29,6 +29,9 @@ export function IFCViewer({
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
+  const orthoCameraRef = useRef<THREE.OrthographicCamera | null>(null)
+  const [cameraType, setCameraType] = useState<'perspective' | 'orthographic'>('perspective')
+  const cameraTypeRef = useRef<'perspective' | 'orthographic'>('perspective')
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const modelGroupRef = useRef<THREE.Group | null>(null)
   const ifcApiRef = useRef<WebIFC.IfcAPI | null>(null)
@@ -97,7 +100,6 @@ export function IFCViewer({
   const [showCameraPicker, setShowCameraPicker] = useState(false)
   const [loadingCameras, setLoadingCameras] = useState<string | null>(null)
   const [selectedCameraSetId, setSelectedCameraSetId] = useState<string | null>(null)
-  const cameraInputRef = useRef<HTMLInputElement>(null)
 
   // Available drawing files from public/drawings (with pre-computed dimensions)
   const AVAILABLE_DRAWINGS = [
@@ -107,25 +109,8 @@ export function IFCViewer({
 
   // Available camera files from public/walkthroughs
   const AVAILABLE_WALKTHROUGHS = [
-    // { name: '6914f098e6ddb4dc7e409bd3', files: ['cameras_hitl.json'] },
-    // { name: '69189a36aa47c180872c76fc', files: ['cameras_hitl.json'] },
-    // { name: '691f7e25576c44436a4ab641', files: ['cameras_hitl.json'] },
-    // { name: '691f80b57668603aaa4ab646', files: ['cameras_hitl.json'] },
-    // { name: '691f83d5bed742e8d84ab64a', files: ['cameras_hitl.json'] },
-    // { name: '691f85ab442b4d8b5d4ab64e', files: ['cameras_hitl.json'] },
-    // { name: '691f88df996ba19c9b4ab652', files: ['cameras_hitl.json'] },
-    // { name: '6921cb8a78b07bef8ea0fc31', files: ['cameras_hitl.json'] },
-    // { name: '6921ced571d15b4e38a0fc35', files: ['cameras_hitl.json'] },
-    // { name: '6921d28846bfcd3b10a0fc3a', files: ['cameras_hitl.json'] },
-    // { name: '6921d46950c87f608ca0fc3f', files: ['cameras_hitl.json'] },
-    // { name: '6921d65b5fa838616fa0fc43', files: ['cameras_hitl.json'] },
-    // { name: '69306923f27d0ab264197631', files: ['cameras_hitl.json'] },
-    // { name: '69309d4960257016debadd55', files: ['cameras_hitl.json'] },
-    // { name: '6930a07ad42b53733abadd59', files: ['cameras_hitl.json'] },
     { name: '6930a2ed1837c39750badd5d', files: ['cameras_hitl.json'] },
-    // { name: '6930a64bea71c4c7d9badd61', files: ['cameras_hitl.json'] },
-    // { name: '6930a831da18bb3c55badd65', files: ['cameras_hitl.json'] },
-    // { name: '6934849b2a468eb3a1430016', files: ['cameras_hitl.json'] },
+    { name: '6930a07ad42b53733abadd59', files: ['cameras_hitl.json'] },
   ]
 
   // Alignment mode state
@@ -387,9 +372,24 @@ export function IFCViewer({
     }))
   }, [])
 
-  // Add camera set from JSON data
+  // Update minimum pan Y based on visible drawing planes
+  useEffect(() => {
+    const visibleDrawings = drawings.filter(d => d.visible)
+    if (visibleDrawings.length > 0) {
+      minPanYRef.current = Math.min(...visibleDrawings.map(d => d.mesh.position.y))
+    } else {
+      minPanYRef.current = null
+    }
+  }, [drawings])
+
+  // Add camera set from JSON data (positions relative to drawing plane, not model)
   const handleAddCameraSet = useCallback(async (name: string, jsonPath: string, imagesPath: string) => {
-    if (!sceneRef.current || !modelGroupRef.current) return
+    if (!sceneRef.current) return
+
+    // Check if this camera set is already loaded
+    if (cameraSets.some(cs => cs.name === name)) {
+      return
+    }
 
     setLoadingCameras(name)
     try {
@@ -397,35 +397,23 @@ export function IFCViewer({
       const data = await response.json()
 
       if (data.cameras && Array.isArray(data.cameras)) {
-        const box = new THREE.Box3().setFromObject(modelGroupRef.current)
-        const size = box.getSize(new THREE.Vector3())
-        const center = box.getCenter(new THREE.Vector3())
-        const minY = box.min.y
-        const planeSize = Math.max(size.x, size.z) * 1.2
-        const planeY = minY - 1
-
-        // Load the first camera image to get aspect ratio for correct positioning
-        let aspectRatio = 1
-        const firstCamWithImage = data.cameras.find((c: { image?: string }) => c.image)
-        if (firstCamWithImage) {
-          try {
-            const img = new Image()
-            await new Promise<void>((resolve, reject) => {
-              img.onload = () => resolve()
-              img.onerror = () => reject(new Error('Failed to load image'))
-              img.src = `${imagesPath}/${firstCamWithImage.image}`
-            })
-            aspectRatio = img.width / img.height
-            console.log(`Camera image aspect ratio: ${aspectRatio} (${img.width}x${img.height})`)
-          } catch (err) {
-            console.warn('Could not load camera image for aspect ratio, using 1:1')
-          }
+        // Get the first drawing's position and size to align cameras with it
+        // Cameras are normalized to the drawing, so we need the drawing's world position
+        const firstDrawing = drawings[0]
+        if (!firstDrawing) {
+          alert('Please add a drawing first before loading cameras')
+          setLoadingCameras(null)
+          return
         }
 
-        const planeWidth = planeSize
-        const planeHeight = planeSize / aspectRatio
+        const drawingMesh = firstDrawing.mesh
+        const drawingCenter = drawingMesh.position.clone()
+        const drawingGeometry = drawingMesh.geometry as THREE.PlaneGeometry
+        const planeWidth = drawingGeometry.parameters.width
+        const planeHeight = drawingGeometry.parameters.height
+        const planeY = drawingCenter.y
 
-        const sphereRadius = planeSize * 0.002
+        const sphereRadius = Math.max(planeWidth, planeHeight) * 0.002
         const sphereGeometry = new THREE.SphereGeometry(sphereRadius, 12, 12)
         const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0xff8c00 })
 
@@ -433,8 +421,9 @@ export function IFCViewer({
 
         for (const cam of data.cameras) {
           if (cam.location && typeof cam.location.x === 'number' && typeof cam.location.y === 'number' && cam.image) {
-            const worldX = center.x + (cam.location.x - 0.5) * planeWidth
-            const worldZ = center.z + (0.5 - cam.location.y) * planeHeight
+            // Position cameras relative to drawing plane center
+            const worldX = drawingCenter.x + (cam.location.x - 0.5) * planeWidth
+            const worldZ = drawingCenter.z + (0.5 - cam.location.y) * planeHeight
 
             const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial.clone())
             sphere.position.set(worldX, planeY + sphereRadius * 2, worldZ)
@@ -470,7 +459,7 @@ export function IFCViewer({
     } finally {
       setLoadingCameras(null)
     }
-  }, [camerasVisible])
+  }, [camerasVisible, drawings, cameraSets])
 
   // Remove camera set
   const handleRemoveCameraSet = useCallback((id: string) => {
@@ -646,7 +635,7 @@ export function IFCViewer({
     if (selectedAlignmentPoint !== '1' && selectedAlignmentPoint !== '2') return
 
     const index = selectedAlignmentPoint === '1' ? 0 : 1
-    const sphereRadius = modelSizeRef.current * 0.004
+    const sphereRadius = sphericalRef.current.radius * 0.005
 
     // Update drawing alignment points
     const newPoints = [...alignmentPoints]
@@ -688,7 +677,7 @@ export function IFCViewer({
     if (selectedAlignmentPoint !== 'A' && selectedAlignmentPoint !== 'B') return
 
     const index = selectedAlignmentPoint === 'A' ? 0 : 1
-    const sphereRadius = modelSizeRef.current * 0.004
+    const sphereRadius = sphericalRef.current.radius * 0.005
 
     // Update model alignment points
     const newPoints = [...modelAlignmentPoints]
@@ -978,7 +967,8 @@ export function IFCViewer({
   }, [modelAlignmentPoints, alignmentPoints, applyAlignment])
 
   // Capture 360 view from a point and convert to equirectangular
-  const captureFisheyeView = useCallback((point: THREE.Vector3) => {
+  // yaw parameter rotates the view (in radians)
+  const captureFisheyeView = useCallback((point: THREE.Vector3, yaw: number = 0) => {
     if (!sceneRef.current || !rendererRef.current) return
 
     const scene = sceneRef.current
@@ -1004,10 +994,27 @@ export function IFCViewer({
     if (modelGroupRef.current) modelGroupRef.current.visible = true
     if (mergedGroupRef.current) mergedGroupRef.current.visible = false
 
+    // Hide all camera markers during fisheye capture
+    const cameraMarkerVisibility: Map<THREE.Mesh, boolean> = new Map()
+    for (const cameraSet of cameraSets) {
+      for (const cam of cameraSet.cameras) {
+        cameraMarkerVisibility.set(cam.mesh, cam.mesh.visible)
+        cam.mesh.visible = false
+      }
+    }
+
     // Update cube camera to capture all 6 faces
     cubeCamera.update(renderer, scene)
 
-    // Restore visibility
+    // Restore camera marker visibility
+    for (const cameraSet of cameraSets) {
+      for (const cam of cameraSet.cameras) {
+        const wasVisible = cameraMarkerVisibility.get(cam.mesh)
+        if (wasVisible !== undefined) cam.mesh.visible = wasVisible
+      }
+    }
+
+    // Restore model/merged visibility
     if (wasModelHidden && modelGroupRef.current) modelGroupRef.current.visible = false
     if (wasMergedVisible && mergedGroupRef.current) mergedGroupRef.current.visible = true
 
@@ -1088,7 +1095,8 @@ export function IFCViewer({
     for (let y = 0; y < equiHeight; y++) {
       for (let x = 0; x < equiWidth; x++) {
         // Convert pixel to spherical coordinates
-        const theta = (x / equiWidth) * 2 * Math.PI - Math.PI // -PI to PI (longitude)
+        // Apply yaw offset to rotate the view
+        const theta = (x / equiWidth) * 2 * Math.PI - Math.PI + yaw // -PI to PI (longitude) + yaw offset
         const phi = (y / equiHeight) * Math.PI // 0 to PI (latitude from top)
 
         // Convert to 3D direction
@@ -1157,7 +1165,7 @@ export function IFCViewer({
     // Convert to data URL
     const dataUrl = canvas.toDataURL('image/png')
     setFisheyeImage(dataUrl)
-  }, [])
+  }, [cameraSets])
 
   // Handle camera marker click - show image from that camera
   const handleCameraMarkerClick = useCallback((camera: CameraMarker) => {
@@ -1172,7 +1180,10 @@ export function IFCViewer({
     const point = selectedCamera.mesh.position.clone()
     // Offset slightly above the drawing plane
     point.y += 1
-    captureFisheyeView(point)
+    // Get yaw from camera location (default to 0 if not present)
+    // NOTE: The yaw is in the opposite direction of the camera's rotation, so we need to negate it.
+    const yaw = selectedCamera.location.yaw || 0
+    captureFisheyeView(point, yaw)
     setCameraViewMode('fisheye')
   }, [selectedCamera, captureFisheyeView])
 
@@ -1183,19 +1194,35 @@ export function IFCViewer({
   const lastMouseRef = useRef({ x: 0, y: 0 })
   const sphericalRef = useRef({ radius: 100, phi: Math.PI / 4, theta: Math.PI / 4 })
   const targetRef = useRef(new THREE.Vector3(0, 0, 0))
+  const minPanYRef = useRef<number | null>(null) // Minimum Y for panning (set by drawing planes)
 
   const updateCameraFromSpherical = useCallback(() => {
-    if (!cameraRef.current) return
-
     const { radius, phi, theta } = sphericalRef.current
     const target = targetRef.current
 
-    const camera = cameraRef.current
-    camera.position.x = target.x + radius * Math.sin(phi) * Math.cos(theta)
-    camera.position.y = target.y + radius * Math.cos(phi)
-    camera.position.z = target.z + radius * Math.sin(phi) * Math.sin(theta)
-    camera.lookAt(target)
-    camera.updateProjectionMatrix()
+    if (cameraTypeRef.current === 'perspective' && cameraRef.current) {
+      const camera = cameraRef.current
+      camera.position.x = target.x + radius * Math.sin(phi) * Math.cos(theta)
+      camera.position.y = target.y + radius * Math.cos(phi)
+      camera.position.z = target.z + radius * Math.sin(phi) * Math.sin(theta)
+      camera.lookAt(target)
+      camera.updateProjectionMatrix()
+    } else if (cameraTypeRef.current === 'orthographic' && orthoCameraRef.current) {
+      const camera = orthoCameraRef.current
+      // Orthographic camera looks straight down
+      camera.position.x = target.x
+      camera.position.y = target.y + radius
+      camera.position.z = target.z
+      camera.lookAt(target)
+      // Update ortho frustum based on radius (zoom level)
+      const aspect = containerRef.current ? containerRef.current.clientWidth / containerRef.current.clientHeight : 1
+      const frustumSize = radius * 0.8
+      camera.left = -frustumSize * aspect
+      camera.right = frustumSize * aspect
+      camera.top = frustumSize
+      camera.bottom = -frustumSize
+      camera.updateProjectionMatrix()
+    }
   }, [])
 
   const updatePivotMarker = useCallback((position: THREE.Vector3) => {
@@ -1209,9 +1236,9 @@ export function IFCViewer({
     }
 
     // Create new marker
-    const markerSize = sphericalRef.current.radius * 0.01
+    const markerSize = sphericalRef.current.radius * 0.005
     const geometry = new THREE.SphereGeometry(markerSize, 16, 16)
-    const material = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff })
     const marker = new THREE.Mesh(geometry, material)
     marker.position.copy(position)
     sceneRef.current.add(marker)
@@ -1245,6 +1272,15 @@ export function IFCViewer({
       100000
     )
     cameraRef.current = camera
+
+    // Orthographic camera for top-down view
+    const aspect = containerRef.current.clientWidth / containerRef.current.clientHeight
+    const orthoCamera = new THREE.OrthographicCamera(
+      -100 * aspect, 100 * aspect, 100, -100, 0.1, 100000
+    )
+    // Set up vector to negative Z so camera looks down with Z pointing "up" on screen
+    orthoCamera.up.set(0, 0, -1)
+    orthoCameraRef.current = orthoCamera
 
     // Renderer setup with error handling
     let renderer: THREE.WebGLRenderer
@@ -1287,7 +1323,9 @@ export function IFCViewer({
         mergedGroupRef.current.visible = true
       }
 
-      renderer.render(scene, camera)
+      // Use the appropriate camera based on camera type
+      const activeCamera = cameraTypeRef.current === 'orthographic' ? orthoCamera : camera
+      renderer.render(scene, activeCamera)
 
       // FPS calculation
       frameCountRef.current++
@@ -1376,21 +1414,31 @@ export function IFCViewer({
         isDraggingRef.current = true
       }
 
-      if (isPanningRef.current) {
-        // Pan
+      if (isPanningRef.current || cameraTypeRef.current === 'orthographic') {
+        // Pan (orthographic camera always pans, never rotates)
         const panSpeed = sphericalRef.current.radius * 0.002
-        const camera = cameraRef.current
+        const camera = cameraTypeRef.current === 'orthographic' ? orthoCameraRef.current : cameraRef.current
         if (!camera) return
 
-        const forward = new THREE.Vector3()
-        camera.getWorldDirection(forward)
-        const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize()
-        const up = new THREE.Vector3().crossVectors(right, forward).normalize()
+        if (cameraTypeRef.current === 'orthographic') {
+          // For orthographic top-down view, pan in X and Z
+          targetRef.current.x -= deltaX * panSpeed
+          targetRef.current.z -= deltaY * panSpeed
+        } else {
+          const forward = new THREE.Vector3()
+          camera.getWorldDirection(forward)
+          const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize()
+          const up = new THREE.Vector3().crossVectors(right, forward).normalize()
 
-        targetRef.current.add(right.multiplyScalar(-deltaX * panSpeed))
-        targetRef.current.add(up.multiplyScalar(deltaY * panSpeed))
+          targetRef.current.add(right.multiplyScalar(-deltaX * panSpeed))
+          targetRef.current.add(up.multiplyScalar(deltaY * panSpeed))
+        }
+        // Clamp Y to not go below drawing plane
+        if (minPanYRef.current !== null && targetRef.current.y < minPanYRef.current) {
+          targetRef.current.y = minPanYRef.current
+        }
       } else {
-        // Rotate
+        // Rotate (perspective only)
         sphericalRef.current.theta += deltaX * 0.01
         // Clamp phi to upper hemisphere only (0.1 to PI/2 - 0.1)
         sphericalRef.current.phi = Math.max(0.1, Math.min(Math.PI / 2 - 0.1, sphericalRef.current.phi - deltaY * 0.01))
@@ -1401,7 +1449,7 @@ export function IFCViewer({
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault()
-      const zoomSpeed = 1.05
+      const zoomSpeed = 1.02
       const modelSize = modelSizeRef.current
       const minDistance = modelSize * 0.1  // Prevent crashing into meshes
       const maxDistance = modelSize * 10   // Prevent meshes from disappearing
@@ -1418,7 +1466,8 @@ export function IFCViewer({
     }
 
     const handleDoubleClick = (e: MouseEvent) => {
-      if (!cameraRef.current || !modelGroupRef.current || !containerRef.current) return
+      const activeCamera = cameraTypeRef.current === 'orthographic' ? orthoCameraRef.current : cameraRef.current
+      if (!activeCamera || !modelGroupRef.current || !containerRef.current) return
 
       const rect = containerRef.current.getBoundingClientRect()
       const mouse = new THREE.Vector2(
@@ -1426,7 +1475,7 @@ export function IFCViewer({
         -((e.clientY - rect.top) / rect.height) * 2 + 1
       )
 
-      raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+      raycasterRef.current.setFromCamera(mouse, activeCamera)
       const intersects = raycasterRef.current.intersectObject(modelGroupRef.current, true)
 
       if (intersects.length > 0) {
@@ -1437,7 +1486,8 @@ export function IFCViewer({
     }
 
     const handleClick = (e: MouseEvent) => {
-      if (!cameraRef.current || !containerRef.current) return
+      const activeCamera = cameraTypeRef.current === 'orthographic' ? orthoCameraRef.current : cameraRef.current
+      if (!activeCamera || !containerRef.current) return
 
       // Ignore clicks that were actually drags (rotation or pan)
       if (isDraggingRef.current) {
@@ -1458,7 +1508,7 @@ export function IFCViewer({
 
       // Check for camera marker clicks first
       if (camerasVisible) {
-        raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+        raycasterRef.current.setFromCamera(mouse, activeCamera)
         // Collect all camera marker meshes from cameraSets
         const cameraMarkerMeshes: THREE.Mesh[] = []
         for (const cameraSet of cameraSets) {
@@ -1489,7 +1539,7 @@ export function IFCViewer({
         const drawing = drawings.find(d => d.id === aligningDrawingId)
         if (!drawing) return
 
-        raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+        raycasterRef.current.setFromCamera(mouse, activeCamera)
 
         // If selecting model points (A or B), raycast against model meshes
         if (selectedAlignmentPoint === 'A' || selectedAlignmentPoint === 'B') {
@@ -1925,6 +1975,18 @@ export function IFCViewer({
             >
               {performanceMode ? 'Perf Mode ON' : 'Perf Mode OFF'}
             </button>
+
+            <button
+              className={`camera-type-toggle ${cameraType === 'orthographic' ? 'active' : ''}`}
+              onClick={() => {
+                const newType = cameraType === 'perspective' ? 'orthographic' : 'perspective'
+                setCameraType(newType)
+                cameraTypeRef.current = newType
+                updateCameraFromSpherical()
+              }}
+            >
+              {cameraType === 'perspective' ? 'Perspective' : 'Orthographic'}
+            </button>
           </>
         )}
       </div>
@@ -2115,74 +2177,6 @@ export function IFCViewer({
                 </svg>
               </button>
             </div>
-            <div
-              className="camera-picker-dropzone"
-              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('dragging') }}
-              onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('dragging') }}
-              onDrop={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.remove('dragging')
-                const file = e.dataTransfer.files[0]
-                if (file && file.name.endsWith('.json')) {
-                  const reader = new FileReader()
-                  reader.onload = async (ev) => {
-                    try {
-                      const data = JSON.parse(ev.target?.result as string)
-                      if (data.cameras && Array.isArray(data.cameras)) {
-                        // Create a blob URL and use handleAddCameraSet
-                        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' })
-                        const url = URL.createObjectURL(blob)
-                        await handleAddCameraSet(file.name, url, '/images')
-                        URL.revokeObjectURL(url)
-                      }
-                    } catch (err) {
-                      console.error('Invalid JSON file:', err)
-                      alert('Invalid camera JSON file')
-                    }
-                  }
-                  reader.readAsText(file)
-                }
-              }}
-              onClick={() => cameraInputRef.current?.click()}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="32" height="32">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17,8 12,3 7,8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-              <p>Drop camera JSON file here or click to browse</p>
-              <input
-                ref={cameraInputRef}
-                type="file"
-                accept=".json"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  if (file) {
-                    const reader = new FileReader()
-                    reader.onload = async (ev) => {
-                      try {
-                        const data = JSON.parse(ev.target?.result as string)
-                        if (data.cameras && Array.isArray(data.cameras)) {
-                          const blob = new Blob([JSON.stringify(data)], { type: 'application/json' })
-                          const url = URL.createObjectURL(blob)
-                          await handleAddCameraSet(file.name, url, '/images')
-                          URL.revokeObjectURL(url)
-                        }
-                      } catch (err) {
-                        console.error('Invalid JSON file:', err)
-                        alert('Invalid camera JSON file')
-                      }
-                    }
-                    reader.readAsText(file)
-                    e.target.value = ''
-                  }
-                }}
-              />
-            </div>
-            <div className="camera-picker-divider">
-              <span>or choose from available walkthroughs</span>
-            </div>
             <div className="camera-picker-list" onWheel={(e) => e.stopPropagation()}>
               {AVAILABLE_WALKTHROUGHS.map((walkthrough) => (
                 <div key={walkthrough.name} className="camera-picker-folder">
@@ -2193,16 +2187,19 @@ export function IFCViewer({
                     <span>{walkthrough.name}</span>
                   </div>
                   <div className="camera-picker-files">
-                    {walkthrough.files.map((file) => (
+                    {walkthrough.files.map((file) => {
+                      const cameraSetName = `${walkthrough.name}/${file}`
+                      const isAlreadyLoaded = cameraSets.some(cs => cs.name === cameraSetName)
+                      return (
                       <button
                         key={file}
-                        className={`camera-picker-item ${loadingCameras === `${walkthrough.name}/${file}` ? 'loading' : ''}`}
+                        className={`camera-picker-item ${loadingCameras === cameraSetName ? 'loading' : ''} ${isAlreadyLoaded ? 'loaded' : ''}`}
                         onClick={() => handleAddCameraSet(
-                          `${walkthrough.name}/${file}`,
+                          cameraSetName,
                           `/walkthroughs/${walkthrough.name}/${file}`,
                           `/walkthroughs/${walkthrough.name}/images`
                         )}
-                        disabled={loadingCameras !== null}
+                        disabled={loadingCameras !== null || isAlreadyLoaded}
                       >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -2210,7 +2207,8 @@ export function IFCViewer({
                         </svg>
                         <span className="camera-picker-item-name">{file}</span>
                       </button>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               ))}
