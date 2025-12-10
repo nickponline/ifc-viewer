@@ -66,6 +66,7 @@ export function IFCViewer({
 
   // Bounding box helper
   const boundingBoxHelperRef = useRef<THREE.LineSegments | null>(null)
+  const cornerLabelsRef = useRef<THREE.Sprite[]>([])
   const [showBoundingBox, setShowBoundingBox] = useState(true)
 
   // Drawing planes state
@@ -77,6 +78,13 @@ export function IFCViewer({
   }
   const [drawings, setDrawings] = useState<DrawingPlane[]>([])
   const drawingInputRef = useRef<HTMLInputElement>(null)
+
+  // Alignment mode state
+  const [aligningDrawingId, setAligningDrawingId] = useState<string | null>(null)
+  const [alignmentPoints, setAlignmentPoints] = useState<THREE.Vector3[]>([])
+  const alignmentMarkersRef = useRef<THREE.Mesh[]>([])
+  const alignmentLinesRef = useRef<THREE.Line | null>(null)
+  const alignmentConnectingLinesRef = useRef<THREE.Line[]>([])
 
   // Function to rebuild merged meshes based on current visibility
   const rebuildMergedMeshes = useCallback(() => {
@@ -216,6 +224,9 @@ export function IFCViewer({
     if (boundingBoxHelperRef.current) {
       boundingBoxHelperRef.current.visible = showBoundingBox
     }
+    cornerLabelsRef.current.forEach(label => {
+      label.visible = showBoundingBox
+    })
   }, [showBoundingBox])
 
   // Loading state
@@ -301,6 +312,253 @@ export function IFCViewer({
       return d
     }))
   }, [])
+
+  // Start alignment mode for a drawing
+  const handleStartAlign = useCallback((id: string) => {
+    setAligningDrawingId(id)
+    setAlignmentPoints([])
+    // Clear any existing markers
+    alignmentMarkersRef.current.forEach(marker => {
+      sceneRef.current?.remove(marker)
+      marker.geometry.dispose()
+      if (marker.material instanceof THREE.Material) marker.material.dispose()
+    })
+    alignmentMarkersRef.current = []
+    if (alignmentLinesRef.current) {
+      sceneRef.current?.remove(alignmentLinesRef.current)
+      alignmentLinesRef.current.geometry.dispose()
+      alignmentLinesRef.current = null
+    }
+  }, [])
+
+  // Cancel alignment mode
+  const handleCancelAlign = useCallback(() => {
+    setAligningDrawingId(null)
+    setAlignmentPoints([])
+    // Clear markers
+    alignmentMarkersRef.current.forEach(marker => {
+      sceneRef.current?.remove(marker)
+      marker.geometry.dispose()
+      if (marker.material instanceof THREE.Material) marker.material.dispose()
+    })
+    alignmentMarkersRef.current = []
+    if (alignmentLinesRef.current) {
+      sceneRef.current?.remove(alignmentLinesRef.current)
+      alignmentLinesRef.current.geometry.dispose()
+      alignmentLinesRef.current = null
+    }
+    // Clear connecting lines
+    alignmentConnectingLinesRef.current.forEach(line => {
+      sceneRef.current?.remove(line)
+      line.geometry.dispose()
+      if (line.material instanceof THREE.Material) line.material.dispose()
+    })
+    alignmentConnectingLinesRef.current = []
+  }, [])
+
+  // Create numbered sprite for alignment markers
+  const createNumberedSprite = useCallback((number: number, color: string = '#00ff00'): THREE.Sprite => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 64
+    const ctx = canvas.getContext('2d')!
+    // Draw number with outline for visibility (transparent background)
+    ctx.strokeStyle = '#000000'
+    ctx.lineWidth = 6
+    ctx.font = 'bold 48px Arial'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.strokeText(String(number), 32, 32)
+    ctx.fillStyle = color
+    ctx.fillText(String(number), 32, 32)
+    const texture = new THREE.CanvasTexture(canvas)
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,  // Always render in front
+      depthWrite: false
+    })
+    const sprite = new THREE.Sprite(material)
+    sprite.scale.set(modelSizeRef.current * 0.05, modelSizeRef.current * 0.05, 1)
+    sprite.renderOrder = 999  // Render on top of everything
+    return sprite
+  }, [])
+
+  // Add alignment point when clicking on drawing
+  const handleAlignmentClick = useCallback((point: THREE.Vector3) => {
+    if (!aligningDrawingId || alignmentPoints.length >= 4 || !modelGroupRef.current) return
+
+    const newPoints = [...alignmentPoints, point]
+    setAlignmentPoints(newPoints)
+
+    // Add numbered billboard sprite marker
+    const sprite = createNumberedSprite(newPoints.length, '#4a9eff')
+    sprite.position.copy(point)
+    sprite.position.y += modelSizeRef.current * 0.03 // Slightly above the surface
+    sceneRef.current?.add(sprite)
+    alignmentMarkersRef.current.push(sprite as unknown as THREE.Mesh)
+
+    // Get model bounding box bottom corners
+    const modelBox = new THREE.Box3().setFromObject(modelGroupRef.current)
+    const minY = modelBox.min.y
+    const modelCorners = [
+      new THREE.Vector3(modelBox.min.x, minY, modelBox.min.z), // 1
+      new THREE.Vector3(modelBox.max.x, minY, modelBox.min.z), // 2
+      new THREE.Vector3(modelBox.max.x, minY, modelBox.max.z), // 3
+      new THREE.Vector3(modelBox.min.x, minY, modelBox.max.z), // 4
+    ]
+
+    // Draw connecting line from model corner to clicked point
+    const cornerIndex = newPoints.length - 1
+    const modelCorner = modelCorners[cornerIndex]
+    const connectingLineGeom = new THREE.BufferGeometry().setFromPoints([modelCorner, point])
+    const connectingLineMat = new THREE.LineBasicMaterial({ color: 0xffff00 }) // Yellow
+    const connectingLine = new THREE.Line(connectingLineGeom, connectingLineMat)
+    sceneRef.current?.add(connectingLine)
+    alignmentConnectingLinesRef.current.push(connectingLine)
+
+    // Update lines connecting points on drawing
+    if (alignmentLinesRef.current) {
+      sceneRef.current?.remove(alignmentLinesRef.current)
+      alignmentLinesRef.current.geometry.dispose()
+    }
+    if (newPoints.length > 1) {
+      const linePoints = [...newPoints]
+      if (newPoints.length === 4) linePoints.push(newPoints[0]) // Close the shape
+      const lineGeom = new THREE.BufferGeometry().setFromPoints(linePoints)
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x4a9eff })
+      const line = new THREE.Line(lineGeom, lineMat)
+      sceneRef.current?.add(line)
+      alignmentLinesRef.current = line
+    }
+
+    // If we have 4 points, apply the alignment
+    if (newPoints.length === 4) {
+      applyAlignment(newPoints)
+    }
+  }, [aligningDrawingId, alignmentPoints, createNumberedSprite])
+
+  // Apply alignment transformation
+  const applyAlignment = useCallback((drawingPoints: THREE.Vector3[]) => {
+    if (!aligningDrawingId || !modelGroupRef.current) return
+
+    const drawing = drawings.find(d => d.id === aligningDrawingId)
+    if (!drawing) return
+
+    // Get model bounding box bottom corners (matching the red numbered labels)
+    const modelBox = new THREE.Box3().setFromObject(modelGroupRef.current)
+    const minY = modelBox.min.y
+    const modelCorners = [
+      new THREE.Vector3(modelBox.min.x, minY, modelBox.min.z), // 1
+      new THREE.Vector3(modelBox.max.x, minY, modelBox.min.z), // 2
+      new THREE.Vector3(modelBox.max.x, minY, modelBox.max.z), // 3
+      new THREE.Vector3(modelBox.min.x, minY, modelBox.max.z), // 4
+    ]
+
+    // Calculate centroids (in XZ plane)
+    const drawingCentroid = new THREE.Vector3()
+    drawingPoints.forEach(p => drawingCentroid.add(p))
+    drawingCentroid.divideScalar(4)
+
+    const modelCentroid = new THREE.Vector3()
+    modelCorners.forEach(p => modelCentroid.add(p))
+    modelCentroid.divideScalar(4)
+
+    // Calculate scale using edge lengths (average of corresponding edges)
+    // Edge 1-2 and 3-4 (one pair of parallel sides)
+    const drawingEdge12 = new THREE.Vector2(
+      drawingPoints[1].x - drawingPoints[0].x,
+      drawingPoints[1].z - drawingPoints[0].z
+    ).length()
+    const drawingEdge34 = new THREE.Vector2(
+      drawingPoints[3].x - drawingPoints[2].x,
+      drawingPoints[3].z - drawingPoints[2].z
+    ).length()
+    const modelEdge12 = new THREE.Vector2(
+      modelCorners[1].x - modelCorners[0].x,
+      modelCorners[1].z - modelCorners[0].z
+    ).length()
+    const modelEdge34 = new THREE.Vector2(
+      modelCorners[3].x - modelCorners[2].x,
+      modelCorners[3].z - modelCorners[2].z
+    ).length()
+
+    // Edge 2-3 and 4-1 (other pair of parallel sides)
+    const drawingEdge23 = new THREE.Vector2(
+      drawingPoints[2].x - drawingPoints[1].x,
+      drawingPoints[2].z - drawingPoints[1].z
+    ).length()
+    const drawingEdge41 = new THREE.Vector2(
+      drawingPoints[0].x - drawingPoints[3].x,
+      drawingPoints[0].z - drawingPoints[3].z
+    ).length()
+    const modelEdge23 = new THREE.Vector2(
+      modelCorners[2].x - modelCorners[1].x,
+      modelCorners[2].z - modelCorners[1].z
+    ).length()
+    const modelEdge41 = new THREE.Vector2(
+      modelCorners[0].x - modelCorners[3].x,
+      modelCorners[0].z - modelCorners[3].z
+    ).length()
+
+    // Average scale from all edges
+    const drawingAvgEdge = (drawingEdge12 + drawingEdge34 + drawingEdge23 + drawingEdge41) / 4
+    const modelAvgEdge = (modelEdge12 + modelEdge34 + modelEdge23 + modelEdge41) / 4
+    const scale = modelAvgEdge / drawingAvgEdge
+
+    // Calculate rotation using the edge from point 1 to point 2
+    const drawingVec = new THREE.Vector2(
+      drawingPoints[1].x - drawingPoints[0].x,
+      drawingPoints[1].z - drawingPoints[0].z
+    ).normalize()
+    const modelVec = new THREE.Vector2(
+      modelCorners[1].x - modelCorners[0].x,
+      modelCorners[1].z - modelCorners[0].z
+    ).normalize()
+
+    // Angle between vectors (in XZ plane, rotating around Y axis)
+    const angle = Math.atan2(modelVec.y, modelVec.x) - Math.atan2(drawingVec.y, drawingVec.x)
+
+    const drawingMesh = drawing.mesh
+
+    // Reset drawing to identity transform first
+    drawingMesh.scale.set(1, 1, 1)
+    drawingMesh.rotation.set(-Math.PI / 2, 0, 0) // Reset to horizontal plane rotation
+    drawingMesh.updateMatrixWorld(true)
+
+    // Get the drawing's current world position (its center)
+    const drawingWorldPos = new THREE.Vector3()
+    drawingMesh.getWorldPosition(drawingWorldPos)
+
+    // Calculate where the drawing centroid is relative to the mesh center
+    // The clicked points are in world space, the drawing mesh center is at drawingWorldPos
+    const drawingCentroidOffset = new THREE.Vector3(
+      drawingCentroid.x - drawingWorldPos.x,
+      0,
+      drawingCentroid.z - drawingWorldPos.z
+    )
+
+    // Apply scale
+    drawingMesh.scale.multiplyScalar(scale)
+
+    // Apply rotation around Y axis (the drawing is already horizontal, so rotate around Y)
+    drawingMesh.rotation.y = angle
+
+    // After scale and rotation, calculate where the centroid would end up
+    const scaledRotatedOffset = drawingCentroidOffset.clone()
+      .multiplyScalar(scale)
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), angle)
+
+    // Position the mesh so the drawing centroid aligns with model centroid
+    drawingMesh.position.x = modelCentroid.x - scaledRotatedOffset.x
+    drawingMesh.position.z = modelCentroid.z - scaledRotatedOffset.z
+
+    // Position drawing just below the model's bottom so it sits exactly on top
+    drawingMesh.position.y = minY - 0.01
+
+    // Clean up alignment mode
+    handleCancelAlign()
+  }, [aligningDrawingId, drawings, handleCancelAlign])
 
   // Camera control state
   const isMouseDownRef = useRef(false)
@@ -575,7 +833,29 @@ export function IFCViewer({
       }
     }
 
+    const handleClick = (e: MouseEvent) => {
+      // Only handle clicks in alignment mode
+      if (!aligningDrawingId || !cameraRef.current || !containerRef.current) return
+
+      const drawing = drawings.find(d => d.id === aligningDrawingId)
+      if (!drawing) return
+
+      const rect = containerRef.current.getBoundingClientRect()
+      const mouse = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      )
+
+      raycasterRef.current.setFromCamera(mouse, cameraRef.current)
+      const intersects = raycasterRef.current.intersectObject(drawing.mesh, false)
+
+      if (intersects.length > 0) {
+        handleAlignmentClick(intersects[0].point)
+      }
+    }
+
     container.addEventListener('mousedown', handleMouseDown)
+    container.addEventListener('click', handleClick)
     container.addEventListener('mouseup', handleMouseUp)
     container.addEventListener('mouseleave', handleMouseUp)
     container.addEventListener('mousemove', handleMouseMove)
@@ -585,6 +865,7 @@ export function IFCViewer({
 
     return () => {
       container.removeEventListener('mousedown', handleMouseDown)
+      container.removeEventListener('click', handleClick)
       container.removeEventListener('mouseup', handleMouseUp)
       container.removeEventListener('mouseleave', handleMouseUp)
       container.removeEventListener('mousemove', handleMouseMove)
@@ -592,7 +873,7 @@ export function IFCViewer({
       container.removeEventListener('contextmenu', handleContextMenu)
       container.removeEventListener('dblclick', handleDoubleClick)
     }
-  }, [updateCameraFromSpherical, updatePivotMarker])
+  }, [updateCameraFromSpherical, updatePivotMarker, aligningDrawingId, drawings, handleAlignmentClick])
 
   // Load IFC data
   useEffect(() => {
@@ -847,6 +1128,49 @@ export function IFCViewer({
         sceneRef.current!.add(boundingBoxHelper)
         boundingBoxHelperRef.current = boundingBoxHelper
 
+        // Create corner labels at bottom 4 vertices
+        const minY = box.min.y
+        const corners = [
+          new THREE.Vector3(box.min.x, minY, box.min.z),
+          new THREE.Vector3(box.max.x, minY, box.min.z),
+          new THREE.Vector3(box.max.x, minY, box.max.z),
+          new THREE.Vector3(box.min.x, minY, box.max.z),
+        ]
+
+        const createTextSprite = (text: string): THREE.Sprite => {
+          const canvas = document.createElement('canvas')
+          canvas.width = 64
+          canvas.height = 64
+          const ctx = canvas.getContext('2d')!
+          // Draw number with outline for visibility (transparent background)
+          ctx.strokeStyle = '#000000'
+          ctx.lineWidth = 6
+          ctx.font = 'bold 48px Arial'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.strokeText(text, 32, 32)
+          ctx.fillStyle = '#ff0000'
+          ctx.fillText(text, 32, 32)
+          const texture = new THREE.CanvasTexture(canvas)
+          const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthTest: false,  // Always render in front
+            depthWrite: false
+          })
+          const sprite = new THREE.Sprite(material)
+          sprite.scale.set(maxDim * 0.05, maxDim * 0.05, 1)
+          sprite.renderOrder = 999  // Render on top of everything
+          return sprite
+        }
+
+        corners.forEach((corner, index) => {
+          const sprite = createTextSprite(String(index + 1))
+          sprite.position.copy(corner)
+          sceneRef.current!.add(sprite)
+          cornerLabelsRef.current.push(sprite)
+        })
+
         // Update camera near/far based on model size
         if (cameraRef.current) {
           cameraRef.current.near = maxDim * 0.001
@@ -1044,6 +1368,16 @@ export function IFCViewer({
                   {drawing.name}
                 </span>
                 <button
+                  className="align-drawing-btn"
+                  onClick={() => handleStartAlign(drawing.id)}
+                  title="Align drawing to model"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>
+                  </svg>
+                </button>
+                <button
                   className="remove-drawing-btn"
                   onClick={() => handleRemoveDrawing(drawing.id)}
                   title="Remove drawing"
@@ -1058,6 +1392,24 @@ export function IFCViewer({
           </div>
         )}
       </div>
+
+      {/* Alignment mode overlay */}
+      {aligningDrawingId && (
+        <div className="alignment-overlay">
+          <div className="alignment-instructions">
+            <h3>Align Drawing</h3>
+            <p>Click the 4 corners on the drawing matching the red numbered corners (1-4) on the model.</p>
+            <p className="alignment-progress">
+              {alignmentPoints.length < 4
+                ? `Click corner ${alignmentPoints.length + 1}`
+                : 'Applying...'}
+            </p>
+            <button className="cancel-align-btn" onClick={handleCancelAlign}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

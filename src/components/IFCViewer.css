@@ -246,6 +246,78 @@
   color: #ff4a4a;
 }
 
+.align-drawing-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.align-drawing-btn:hover {
+  color: #4a9eff;
+}
+
+/* Alignment mode overlay */
+.alignment-overlay {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  pointer-events: none;
+}
+
+.alignment-instructions {
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid #4a9eff;
+  border-radius: 12px;
+  padding: 16px 24px;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.alignment-instructions h3 {
+  color: #4a9eff;
+  font-size: 16px;
+  margin: 0 0 8px 0;
+}
+
+.alignment-instructions p {
+  color: #fff;
+  font-size: 13px;
+  margin: 0 0 8px 0;
+}
+
+.alignment-progress {
+  color: #4a9eff !important;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-weight: 600;
+}
+
+.cancel-align-btn {
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-top: 8px;
+}
+
+.cancel-align-btn:hover {
+  background: rgba(255, 74, 74, 0.2);
+  border-color: #ff4a4a;
+  color: #ff4a4a;
+}
+
 /* Responsive styles */
 @media (max-width: 768px) {
   .controls-hint {
