@@ -64,6 +64,20 @@ export function IFCViewer({
   const originalPixelRatioRef = useRef<number>(1)
   const modelSizeRef = useRef<number>(100) // Store model max dimension for zoom limits
 
+  // Bounding box helper
+  const boundingBoxHelperRef = useRef<THREE.LineSegments | null>(null)
+  const [showBoundingBox, setShowBoundingBox] = useState(true)
+
+  // Drawing planes state
+  interface DrawingPlane {
+    id: string
+    name: string
+    mesh: THREE.Mesh
+    visible: boolean
+  }
+  const [drawings, setDrawings] = useState<DrawingPlane[]>([])
+  const drawingInputRef = useRef<HTMLInputElement>(null)
+
   // Function to rebuild merged meshes based on current visibility
   const rebuildMergedMeshes = useCallback(() => {
     if (!modelGroupRef.current || !mergedGroupRef.current || !sceneRef.current) return
@@ -197,6 +211,13 @@ export function IFCViewer({
     }
   }, [performanceMode, categories, selectedStorey, rebuildMergedMeshes])
 
+  // Sync bounding box visibility
+  useEffect(() => {
+    if (boundingBoxHelperRef.current) {
+      boundingBoxHelperRef.current.visible = showBoundingBox
+    }
+  }, [showBoundingBox])
+
   // Loading state
   const [loadingState, setLoadingState] = useState<{
     loading: boolean
@@ -204,6 +225,82 @@ export function IFCViewer({
     meshCount: number
     totalMeshes: number
   }>({ loading: true, stage: 'Initializing...', meshCount: 0, totalMeshes: 0 })
+
+  // Add drawing plane from image file
+  const handleAddDrawing = useCallback((file: File) => {
+    if (!sceneRef.current || !modelGroupRef.current) return
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string
+      const texture = new THREE.TextureLoader().load(dataUrl, (tex) => {
+        // Get model bounds to size the plane appropriately
+        const box = new THREE.Box3().setFromObject(modelGroupRef.current!)
+        const size = box.getSize(new THREE.Vector3())
+        const center = box.getCenter(new THREE.Vector3())
+        const minY = box.min.y
+
+        // Create plane geometry sized to model footprint
+        const planeSize = Math.max(size.x, size.z) * 1.2
+        const aspectRatio = tex.image.width / tex.image.height
+        const geometry = new THREE.PlaneGeometry(
+          planeSize,
+          planeSize / aspectRatio
+        )
+
+        // Create material with the texture
+        const material = new THREE.MeshBasicMaterial({
+          map: texture,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.8
+        })
+
+        // Create mesh and position it below the model
+        const plane = new THREE.Mesh(geometry, material)
+        plane.rotation.x = -Math.PI / 2 // Rotate to be horizontal
+        plane.position.set(center.x, minY - 1, center.z)
+
+        sceneRef.current!.add(plane)
+
+        const drawing: DrawingPlane = {
+          id: crypto.randomUUID(),
+          name: file.name,
+          mesh: plane,
+          visible: true
+        }
+
+        setDrawings(prev => [...prev, drawing])
+      })
+    }
+    reader.readAsDataURL(file)
+  }, [])
+
+  // Remove drawing plane
+  const handleRemoveDrawing = useCallback((id: string) => {
+    setDrawings(prev => {
+      const drawing = prev.find(d => d.id === id)
+      if (drawing && sceneRef.current) {
+        sceneRef.current.remove(drawing.mesh)
+        drawing.mesh.geometry.dispose()
+        if (drawing.mesh.material instanceof THREE.Material) {
+          drawing.mesh.material.dispose()
+        }
+      }
+      return prev.filter(d => d.id !== id)
+    })
+  }, [])
+
+  // Toggle drawing visibility
+  const handleToggleDrawing = useCallback((id: string) => {
+    setDrawings(prev => prev.map(d => {
+      if (d.id === id) {
+        d.mesh.visible = !d.visible
+        return { ...d, visible: !d.visible }
+      }
+      return d
+    }))
+  }, [])
 
   // Camera control state
   const isMouseDownRef = useRef(false)
@@ -741,6 +838,15 @@ export function IFCViewer({
         sphericalRef.current.radius = maxDim * 2
         modelSizeRef.current = maxDim  // Store for zoom limits
 
+        // Create red wireframe bounding box
+        const boxGeometry = new THREE.BoxGeometry(size.x, size.y, size.z)
+        const edges = new THREE.EdgesGeometry(boxGeometry)
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0xff0000 })
+        const boundingBoxHelper = new THREE.LineSegments(edges, lineMaterial)
+        boundingBoxHelper.position.copy(center)
+        sceneRef.current!.add(boundingBoxHelper)
+        boundingBoxHelperRef.current = boundingBoxHelper
+
         // Update camera near/far based on model size
         if (cameraRef.current) {
           cameraRef.current.near = maxDim * 0.001
@@ -875,6 +981,81 @@ export function IFCViewer({
               <span className="diagnostics-value">{diagnostics.mergedMeshes}</span>
             </div>
           </>
+        )}
+
+        <div className="diagnostics-divider" />
+
+        <button
+          className={`perf-mode-toggle ${showBoundingBox ? 'active' : ''}`}
+          onClick={() => setShowBoundingBox(!showBoundingBox)}
+        >
+          {showBoundingBox ? 'Bounds ON' : 'Bounds OFF'}
+        </button>
+      </div>
+
+      {/* Drawing planes panel */}
+      <div className="drawings-panel">
+        <input
+          ref={drawingInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) {
+              handleAddDrawing(file)
+              e.target.value = ''
+            }
+          }}
+        />
+        <button
+          className="add-drawing-btn"
+          onClick={() => drawingInputRef.current?.click()}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21,15 16,10 5,21"/>
+          </svg>
+          Add Drawing
+        </button>
+        {drawings.length > 0 && (
+          <div className="drawings-list">
+            {drawings.map((drawing) => (
+              <div key={drawing.id} className={`drawing-item ${!drawing.visible ? 'hidden' : ''}`}>
+                <button
+                  className="toggle-drawing-btn"
+                  onClick={() => handleToggleDrawing(drawing.id)}
+                  title={drawing.visible ? 'Hide drawing' : 'Show drawing'}
+                >
+                  {drawing.visible ? (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  )}
+                </button>
+                <span className="drawing-name" title={drawing.name}>
+                  {drawing.name}
+                </span>
+                <button
+                  className="remove-drawing-btn"
+                  onClick={() => handleRemoveDrawing(drawing.id)}
+                  title="Remove drawing"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>
