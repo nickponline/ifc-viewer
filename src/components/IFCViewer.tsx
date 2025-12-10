@@ -1,5 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+
 import * as WebIFC from 'web-ifc'
 import type { CameraState, ElementCategory, IFCMetadata, StoreyInfo } from '../types'
 import './IFCViewer.css'
@@ -46,24 +48,127 @@ export function IFCViewer({
     // Performance mode stats
     totalMeshes: 0,
     visibleMeshes: 0,
-    frustumCulled: 0
+    // Perf mode specific
+    mergedMeshes: 0,
+    pixelRatio: 1
   })
 
   // High performance mode
-  const [performanceMode, setPerformanceMode] = useState(false)
-  const performanceModeRef = useRef(false)
-  const frustumRef = useRef(new THREE.Frustum())
-  const projScreenMatrixRef = useRef(new THREE.Matrix4())
-  const meshBoundsMapRef = useRef<Map<number, THREE.Box3>>(new Map())
-  const cullingStatsRef = useRef({ total: 0, visible: 0, frustumCulled: 0 })
+  const [performanceMode, setPerformanceMode] = useState(true)
+  const performanceModeRef = useRef(true)
   const categoriesRef = useRef<ElementCategory[]>([])
   const selectedStoreyRef = useRef<number | null>(null)
   const storeysRef = useRef<StoreyInfo[]>([])
   const storeyElementSetRef = useRef<Set<number>>(new Set())
+  const mergedGroupRef = useRef<THREE.Group | null>(null)
+  const originalPixelRatioRef = useRef<number>(1)
+  const modelSizeRef = useRef<number>(100) // Store model max dimension for zoom limits
 
-  // Keep refs in sync with state
+  // Function to rebuild merged meshes based on current visibility
+  const rebuildMergedMeshes = useCallback(() => {
+    if (!modelGroupRef.current || !mergedGroupRef.current || !sceneRef.current) return
+
+    const mergedGroup = mergedGroupRef.current
+    const modelGroup = modelGroupRef.current
+
+    // Clear existing merged meshes
+    while (mergedGroup.children.length > 0) {
+      const child = mergedGroup.children[0]
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose()
+        if (child.material instanceof THREE.Material) {
+          child.material.dispose()
+        }
+      }
+      mergedGroup.remove(child)
+    }
+
+    // Build visibility maps
+    const categoryVisibility = new Map(
+      categoriesRef.current.map(c => [c.id, c.visible])
+    )
+    const hasStoreyFilter = selectedStoreyRef.current !== null
+    const storeyElements = storeyElementSetRef.current
+
+    // Group visible geometries by color
+    const colorGroups = new Map<string, { geometries: THREE.BufferGeometry[], color: THREE.Color, opacity: number }>()
+
+    modelGroup.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.geometry && obj.userData.expressID !== undefined) {
+        // Check storey visibility
+        if (hasStoreyFilter && !storeyElements.has(obj.userData.expressID)) {
+          return
+        }
+
+        // Check category visibility
+        const categoryId = obj.userData.categoryId
+        if (categoryId !== undefined && categoryVisibility.get(categoryId) === false) {
+          return
+        }
+
+        // This mesh is visible - add to merge groups
+        const mat = obj.material as THREE.MeshPhongMaterial
+        const colorKey = `${mat.color.r.toFixed(3)},${mat.color.g.toFixed(3)},${mat.color.b.toFixed(3)},${mat.opacity}`
+
+        if (!colorGroups.has(colorKey)) {
+          colorGroups.set(colorKey, {
+            geometries: [],
+            color: mat.color.clone(),
+            opacity: mat.opacity
+          })
+        }
+        colorGroups.get(colorKey)!.geometries.push(obj.geometry.clone())
+      }
+    })
+
+    // Merge geometries for each color group
+    let mergedCount = 0
+    colorGroups.forEach(({ geometries, color, opacity }) => {
+      if (geometries.length > 0) {
+        try {
+          const merged = mergeGeometries(geometries, false)
+          if (merged) {
+            const material = new THREE.MeshPhongMaterial({
+              color,
+              opacity,
+              transparent: opacity < 1,
+              side: THREE.DoubleSide
+            })
+            const mergedMesh = new THREE.Mesh(merged, material)
+            mergedMesh.matrixAutoUpdate = false
+            mergedGroup.add(mergedMesh)
+            mergedCount++
+          }
+          // Dispose cloned geometries after merging
+          geometries.forEach(g => g.dispose())
+        } catch (e) {
+          console.warn('Failed to merge geometries:', e)
+          geometries.forEach(g => g.dispose())
+        }
+      }
+    })
+
+    console.log(`Rebuilt ${mergedCount} merged meshes for current visibility`)
+  }, [])
+
+  // Keep refs in sync with state and handle perf mode changes
   useEffect(() => {
     performanceModeRef.current = performanceMode
+
+    // Toggle pixel ratio for performance
+    if (rendererRef.current) {
+      if (performanceMode) {
+        // Store original and lower pixel ratio
+        originalPixelRatioRef.current = rendererRef.current.getPixelRatio()
+        rendererRef.current.setPixelRatio(1) // Lower for performance
+      } else {
+        // Restore original pixel ratio
+        rendererRef.current.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+        // Reset visibility - show individual meshes, hide merged
+        if (modelGroupRef.current) modelGroupRef.current.visible = true
+        if (mergedGroupRef.current) mergedGroupRef.current.visible = false
+      }
+    }
   }, [performanceMode])
 
   useEffect(() => {
@@ -85,12 +190,20 @@ export function IFCViewer({
     storeysRef.current = storeys
   }, [storeys])
 
+  // Rebuild merged meshes when visibility changes and perf mode is on
+  useEffect(() => {
+    if (performanceMode && mergedGroupRef.current) {
+      rebuildMergedMeshes()
+    }
+  }, [performanceMode, categories, selectedStorey, rebuildMergedMeshes])
+
   // Loading state
   const [loadingState, setLoadingState] = useState<{
     loading: boolean
     stage: string
     meshCount: number
-  }>({ loading: true, stage: 'Initializing...', meshCount: 0 })
+    totalMeshes: number
+  }>({ loading: true, stage: 'Initializing...', meshCount: 0, totalMeshes: 0 })
 
   // Camera control state
   const isMouseDownRef = useRef(false)
@@ -188,7 +301,7 @@ export function IFCViewer({
     // Renderer setup with error handling
     let renderer: THREE.WebGLRenderer
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+      renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
     } catch (e) {
       console.error('Failed to create WebGL renderer:', e)
       return
@@ -220,65 +333,10 @@ export function IFCViewer({
     const animate = () => {
       animationIdRef.current = requestAnimationFrame(animate)
 
-      // Performance mode: LOD swap and frustum culling
-      if (performanceModeRef.current && modelGroupRef.current) {
-        camera.updateMatrixWorld()
-        projScreenMatrixRef.current.multiplyMatrices(
-          camera.projectionMatrix,
-          camera.matrixWorldInverse
-        )
-        frustumRef.current.setFromProjectionMatrix(projScreenMatrixRef.current)
-
-        // Build category visibility map
-        const categoryVisibility = new Map(
-          categoriesRef.current.map(c => [c.id, c.visible])
-        )
-
-        let total = 0
-        let visible = 0
-        let frustumCulled = 0
-
-        // Check if storey filter is active
-        const hasStoreyFilter = selectedStoreyRef.current !== null
-        const storeyElements = storeyElementSetRef.current
-
-        modelGroupRef.current.traverse((obj) => {
-          if (obj instanceof THREE.Mesh && obj.userData.expressID !== undefined) {
-            total++
-
-            // Check storey visibility first
-            if (hasStoreyFilter && !storeyElements.has(obj.userData.expressID)) {
-              obj.visible = false
-              return
-            }
-
-            // Check category visibility
-            const categoryId = obj.userData.categoryId
-            if (categoryId !== undefined && categoryVisibility.get(categoryId) === false) {
-              obj.visible = false
-              return
-            }
-
-            // Get or compute bounding box
-            let bounds = meshBoundsMapRef.current.get(obj.id)
-            if (!bounds) {
-              bounds = new THREE.Box3().setFromObject(obj)
-              meshBoundsMapRef.current.set(obj.id, bounds)
-            }
-
-            // Frustum culling
-            if (!frustumRef.current.intersectsBox(bounds)) {
-              obj.visible = false
-              frustumCulled++
-              return
-            }
-
-            obj.visible = true
-            visible++
-          }
-        })
-
-        cullingStatsRef.current = { total, visible, frustumCulled }
+      // Performance mode handling - always use merged meshes (they're rebuilt on visibility change)
+      if (performanceModeRef.current && modelGroupRef.current && mergedGroupRef.current) {
+        modelGroupRef.current.visible = false
+        mergedGroupRef.current.visible = true
       }
 
       renderer.render(scene, camera)
@@ -293,16 +351,17 @@ export function IFCViewer({
       if (fpsUpdateIntervalRef.current >= 500) {
         const fps = Math.round((frameCountRef.current * 1000) / fpsUpdateIntervalRef.current)
         const info = renderer.info
-        const stats = cullingStatsRef.current
+        const mergedCount = mergedGroupRef.current?.children.length || 0
         setDiagnostics({
           fps,
           triangles: info.render.triangles,
           drawCalls: info.render.calls,
           geometries: info.memory.geometries,
           textures: info.memory.textures,
-          totalMeshes: stats.total,
-          visibleMeshes: stats.visible,
-          frustumCulled: stats.frustumCulled
+          totalMeshes: mergedCount,
+          visibleMeshes: mergedCount,
+          mergedMeshes: mergedCount,
+          pixelRatio: renderer.getPixelRatio()
         })
         frameCountRef.current = 0
         fpsUpdateIntervalRef.current = 0
@@ -373,9 +432,10 @@ export function IFCViewer({
         targetRef.current.add(right.multiplyScalar(-deltaX * panSpeed))
         targetRef.current.add(up.multiplyScalar(deltaY * panSpeed))
       } else {
-        // Rotate (reversed directions)
+        // Rotate
         sphericalRef.current.theta += deltaX * 0.01
-        sphericalRef.current.phi = Math.max(0.1, Math.min(Math.PI - 0.1, sphericalRef.current.phi - deltaY * 0.01))
+        // Clamp phi to upper hemisphere only (0.1 to PI/2 - 0.1)
+        sphericalRef.current.phi = Math.max(0.1, Math.min(Math.PI / 2 - 0.1, sphericalRef.current.phi - deltaY * 0.01))
       }
 
       updateCameraFromSpherical()
@@ -383,11 +443,14 @@ export function IFCViewer({
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault()
-      const zoomSpeed = 1.1
+      const zoomSpeed = 1.05
+      const modelSize = modelSizeRef.current
+      const minDistance = modelSize * 0.1  // Prevent crashing into meshes
+      const maxDistance = modelSize * 10   // Prevent meshes from disappearing
       if (e.deltaY > 0) {
-        sphericalRef.current.radius = Math.min(50000, sphericalRef.current.radius * zoomSpeed)
+        sphericalRef.current.radius = Math.min(maxDistance, sphericalRef.current.radius * zoomSpeed)
       } else {
-        sphericalRef.current.radius = Math.max(0.1, sphericalRef.current.radius / zoomSpeed)
+        sphericalRef.current.radius = Math.max(minDistance, sphericalRef.current.radius / zoomSpeed)
       }
       updateCameraFromSpherical()
     }
@@ -440,29 +503,46 @@ export function IFCViewer({
 
     const loadIFC = async () => {
       console.log('Loading IFC file...')
-      setLoadingState({ loading: true, stage: 'Initializing WebIFC...', meshCount: 0 })
+      setLoadingState({ loading: true, stage: 'Initializing WebIFC...', meshCount: 0, totalMeshes: 0 })
 
       const ifcApi = new WebIFC.IfcAPI()
       ifcApi.SetWasmPath('/')
       await ifcApi.Init()
       ifcApiRef.current = ifcApi
 
-      setLoadingState({ loading: true, stage: 'Parsing IFC file...', meshCount: 0 })
+      setLoadingState({ loading: true, stage: 'Parsing IFC file...', meshCount: 0, totalMeshes: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+
       const modelID = ifcApi.OpenModel(new Uint8Array(ifcData))
       console.log('Model opened, ID:', modelID)
 
       // Extract IFC metadata
-      setLoadingState({ loading: true, stage: 'Reading metadata...', meshCount: 0 })
+      setLoadingState({ loading: true, stage: 'Reading metadata...', meshCount: 0, totalMeshes: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
+
       const metadata = extractMetadata(ifcApi, modelID)
       onMetadataLoaded(metadata)
 
-      setLoadingState({ loading: true, stage: 'Loading geometry...', meshCount: 0 })
+      setLoadingState({ loading: true, stage: 'Collecting meshes...', meshCount: 0, totalMeshes: 0 })
+      await new Promise(resolve => setTimeout(resolve, 0))
 
       const modelGroup = modelGroupRef.current!
       const categoryData: Map<number, { count: number; meshIds: number[] }> = new Map()
-      let meshCount = 0
 
-      // Get all geometry
+      // Collect all mesh data first (synchronous callback)
+      interface MeshData {
+        expressID: number
+        typeId: number
+        geometries: Array<{
+          verts: Float32Array
+          indices: Uint32Array
+          transform: number[]
+          color: { x: number; y: number; z: number; w: number }
+        }>
+      }
+      const collectedMeshes: MeshData[] = []
+      let collectCount = 0
+
       ifcApi.StreamAllMeshes(modelID, (mesh) => {
         const expressID = mesh.expressID
 
@@ -481,6 +561,7 @@ export function IFCViewer({
         categoryData.get(typeId)!.count++
         categoryData.get(typeId)!.meshIds.push(expressID)
 
+        const meshData: MeshData = { expressID, typeId, geometries: [] }
         const placedGeometries = mesh.geometries
         for (let i = 0; i < placedGeometries.size(); i++) {
           const placedGeometry = placedGeometries.get(i)
@@ -497,55 +578,146 @@ export function IFCViewer({
 
           if (verts.length === 0 || indices.length === 0) continue
 
+          meshData.geometries.push({
+            verts: new Float32Array(verts),
+            indices: new Uint32Array(indices),
+            transform: Array.from(placedGeometry.flatTransformation),
+            color: { x: placedGeometry.color.x, y: placedGeometry.color.y, z: placedGeometry.color.z, w: placedGeometry.color.w }
+          })
+        }
+        if (meshData.geometries.length > 0) {
+          collectedMeshes.push(meshData)
+        }
+
+        // Update progress (will batch but shows final count)
+        collectCount++
+        if (collectCount % 100 === 0) {
+          setLoadingState({ loading: true, stage: 'Collecting meshes...', meshCount: collectCount, totalMeshes: 0 })
+        }
+      })
+
+      const totalMeshes = collectedMeshes.length
+      console.log('Collected', totalMeshes, 'meshes')
+      setLoadingState({ loading: true, stage: 'Loading geometry...', meshCount: 0, totalMeshes })
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      // Process collected meshes in batches to allow UI updates
+      let meshCount = 0
+      for (let m = 0; m < collectedMeshes.length; m++) {
+        const meshData = collectedMeshes[m]
+
+        for (const geomData of meshData.geometries) {
           // Create Three.js geometry
           const bufferGeometry = new THREE.BufferGeometry()
 
           const positions: number[] = []
           const normals: number[] = []
 
-          for (let j = 0; j < verts.length; j += 6) {
-            positions.push(verts[j], verts[j + 1], verts[j + 2])
-            normals.push(verts[j + 3], verts[j + 4], verts[j + 5])
+          for (let j = 0; j < geomData.verts.length; j += 6) {
+            positions.push(geomData.verts[j], geomData.verts[j + 1], geomData.verts[j + 2])
+            normals.push(geomData.verts[j + 3], geomData.verts[j + 4], geomData.verts[j + 5])
           }
 
           bufferGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
           bufferGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
-          bufferGeometry.setIndex(Array.from(indices))
+          bufferGeometry.setIndex(Array.from(geomData.indices))
 
           // Apply transformation
           const matrix = new THREE.Matrix4()
-          matrix.fromArray(placedGeometry.flatTransformation)
+          matrix.fromArray(geomData.transform)
           bufferGeometry.applyMatrix4(matrix)
 
           // Create material with color from IFC
           const color = new THREE.Color(
-            placedGeometry.color.x,
-            placedGeometry.color.y,
-            placedGeometry.color.z
+            geomData.color.x,
+            geomData.color.y,
+            geomData.color.z
           )
 
           const material = new THREE.MeshPhongMaterial({
             color,
-            opacity: placedGeometry.color.w,
-            transparent: placedGeometry.color.w < 1,
+            opacity: geomData.color.w,
+            transparent: geomData.color.w < 1,
             side: THREE.DoubleSide
           })
 
           const threeMesh = new THREE.Mesh(bufferGeometry, material)
-          threeMesh.userData.expressID = expressID
-          threeMesh.userData.categoryId = typeId
+          threeMesh.userData.expressID = meshData.expressID
+          threeMesh.userData.categoryId = meshData.typeId
+          threeMesh.matrixAutoUpdate = false // Optimization: static meshes don't need matrix updates
+          threeMesh.updateMatrix()
 
           modelGroup.add(threeMesh)
           meshCount++
+        }
 
-          // Update loading progress every 50 meshes
-          if (meshCount % 50 === 0) {
-            setLoadingState({ loading: true, stage: 'Loading geometry...', meshCount })
+        // Yield to browser every 50 meshes to allow UI updates
+        if (m % 50 === 0) {
+          setLoadingState({ loading: true, stage: 'Loading geometry...', meshCount: m + 1, totalMeshes })
+          await new Promise(resolve => setTimeout(resolve, 0))
+        }
+      }
+
+      console.log('Created', meshCount, 'meshes')
+
+      // Create merged geometries for performance mode
+      setLoadingState({ loading: true, stage: 'Optimizing geometry...', meshCount: totalMeshes, totalMeshes })
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      const mergedGroup = new THREE.Group()
+      mergedGroup.visible = false // Hidden by default
+      sceneRef.current!.add(mergedGroup)
+      mergedGroupRef.current = mergedGroup
+
+      // Group geometries by color
+      const colorGroups = new Map<string, { geometries: THREE.BufferGeometry[], color: THREE.Color, opacity: number }>()
+
+      modelGroup.traverse((obj) => {
+        if (obj instanceof THREE.Mesh && obj.geometry) {
+          const mat = obj.material as THREE.MeshPhongMaterial
+          const colorKey = `${mat.color.r.toFixed(3)},${mat.color.g.toFixed(3)},${mat.color.b.toFixed(3)},${mat.opacity}`
+
+          if (!colorGroups.has(colorKey)) {
+            colorGroups.set(colorKey, {
+              geometries: [],
+              color: mat.color.clone(),
+              opacity: mat.opacity
+            })
+          }
+          colorGroups.get(colorKey)!.geometries.push(obj.geometry.clone())
+        }
+      })
+
+      // Merge geometries for each color group
+      let mergedCount = 0
+      colorGroups.forEach(({ geometries, color, opacity }) => {
+        if (geometries.length > 0) {
+          try {
+            let merged = mergeGeometries(geometries, false)
+            if (merged) {
+              const originalVertexCount = merged.attributes.position.count
+              const originalTriCount = merged.index ? merged.index.count / 3 : originalVertexCount / 3
+
+             
+
+              const material = new THREE.MeshPhongMaterial({
+                color,
+                opacity,
+                transparent: opacity < 1,
+                side: THREE.DoubleSide
+              })
+              const mergedMesh = new THREE.Mesh(merged, material)
+              mergedMesh.matrixAutoUpdate = false
+              mergedGroup.add(mergedMesh)
+              mergedCount++
+            }
+          } catch (e) {
+            console.warn('Failed to merge geometries:', e)
           }
         }
       })
 
-      console.log('Created', meshCount, 'meshes')
+      console.log(`Created ${mergedCount} merged meshes from ${meshCount} original meshes`)
 
       // Compute bounding box and center camera
       const box = new THREE.Box3()
@@ -555,6 +727,7 @@ export function IFCViewer({
         console.warn('Bounding box is empty, using default camera position')
         targetRef.current.set(0, 0, 0)
         sphericalRef.current.radius = 100
+        modelSizeRef.current = 100
       } else {
         const center = box.getCenter(new THREE.Vector3())
         const size = box.getSize(new THREE.Vector3())
@@ -566,6 +739,7 @@ export function IFCViewer({
 
         targetRef.current.copy(center)
         sphericalRef.current.radius = maxDim * 2
+        modelSizeRef.current = maxDim  // Store for zoom limits
 
         // Update camera near/far based on model size
         if (cameraRef.current) {
@@ -642,8 +816,19 @@ export function IFCViewer({
           <div className="loading-content">
             <div className="loading-spinner"></div>
             <div className="loading-stage">{loadingState.stage}</div>
-            {loadingState.meshCount > 0 && (
-              <div className="loading-count">{loadingState.meshCount.toLocaleString()} meshes</div>
+            {loadingState.totalMeshes > 0 ? (
+              <>
+                <div className="loading-percentage">
+                  {Math.round((loadingState.meshCount / loadingState.totalMeshes) * 100)}%
+                </div>
+                <div className="loading-count">
+                  {loadingState.meshCount.toLocaleString()} / {loadingState.totalMeshes.toLocaleString()} meshes
+                </div>
+              </>
+            ) : loadingState.meshCount > 0 && (
+              <div className="loading-count">
+                {loadingState.meshCount.toLocaleString()} meshes found
+              </div>
             )}
           </div>
         </div>
@@ -682,23 +867,15 @@ export function IFCViewer({
         {performanceMode && (
           <>
             <div className="diagnostics-row">
-              <span className="diagnostics-label">Visible</span>
-              <span className="diagnostics-value">
-                {diagnostics.visibleMeshes} / {diagnostics.totalMeshes}
-              </span>
+              <span className="diagnostics-label">Pixel ratio</span>
+              <span className="diagnostics-value">{diagnostics.pixelRatio.toFixed(1)}</span>
             </div>
             <div className="diagnostics-row">
-              <span className="diagnostics-label">Frustum culled</span>
-              <span className="diagnostics-value">{diagnostics.frustumCulled}</span>
+              <span className="diagnostics-label">Merged meshes</span>
+              <span className="diagnostics-value">{diagnostics.mergedMeshes}</span>
             </div>
           </>
         )}
-      </div>
-      <div className="controls-hint">
-        <span>Drag: Rotate</span>
-        <span>Shift+Drag / Right-click: Pan</span>
-        <span>Scroll: Zoom</span>
-        <span>Double-click: Set pivot</span>
       </div>
     </div>
   )
