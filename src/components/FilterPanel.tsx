@@ -2,9 +2,28 @@ import { useState } from 'react'
 import type { ElementCategory, IFCMetadata } from '../types'
 import './FilterPanel.css'
 
+// BIM-standard colors for architectural elements
+const BIM_COLORS = [
+  // Concrete/Structure - grays
+  '#808080', '#A0A0A0', '#C0C0C0', '#606060',
+  // Walls - warm neutrals
+  '#D4C4B0', '#E8DCC8', '#C9B99A', '#B8A888',
+  // Glass/Windows - blues
+  '#87CEEB', '#ADD8E6', '#B0E0E6', '#6BB3D9',
+  // Steel/Metal - cool grays
+  '#708090', '#778899', '#B0C4DE', '#4682B4',
+  // Wood - browns
+  '#8B4513', '#A0522D', '#CD853F', '#DEB887',
+  // MEP - system colors
+  '#4169E1', '#32CD32', '#FF6347', '#FFD700',
+  // Insulation/Special
+  '#FFB6C1', '#DDA0DD', '#98FB98', '#F0E68C',
+]
+
 interface FilterPanelProps {
   categories: ElementCategory[]
   onCategoryToggle: (categoryId: number) => void
+  onCategoryColorChange: (categoryId: number, color: string) => void
   onToggleAll: (visible: boolean) => void
   fileName: string
   metadata: IFCMetadata
@@ -65,6 +84,7 @@ function getCategoryDisplayName(category: ElementCategory): string {
 export function FilterPanel({
   categories,
   onCategoryToggle,
+  onCategoryColorChange,
   onToggleAll,
   fileName,
   metadata,
@@ -74,16 +94,28 @@ export function FilterPanel({
 }: FilterPanelProps) {
   const [activeTab, setActiveTab] = useState<'elements' | 'info'>('elements')
   const [isCollapsed, setIsCollapsed] = useState(true)
+  const [openColorPicker, setOpenColorPicker] = useState<number | null>(null)
   const visibleCount = categories.filter(c => c.visible).length
   const allVisible = visibleCount === categories.length
   const noneVisible = visibleCount === 0
+
+  const handleColorSelect = (categoryId: number, color: string) => {
+    onCategoryColorChange(categoryId, color)
+    setOpenColorPicker(null)
+  }
+
+  const handleClickOutside = (e: React.MouseEvent) => {
+    if (openColorPicker !== null && !(e.target as HTMLElement).closest('.color-picker-wrapper')) {
+      setOpenColorPicker(null)
+    }
+  }
 
   if (isGalleryView) {
     return null
   }
 
   return (
-    <div className={`filter-panel ${isCollapsed ? 'collapsed' : ''}`}>
+    <div className={`filter-panel ${isCollapsed ? 'collapsed' : ''}`} onClick={handleClickOutside}>
       <button
         className="filter-header"
         onClick={() => setIsCollapsed(!isCollapsed)}
@@ -166,15 +198,40 @@ export function FilterPanel({
               [...categories]
                 .sort((a, b) => getCategoryDisplayName(a).localeCompare(getCategoryDisplayName(b)))
                 .map(category => (
-                  <label key={category.id} className="category-item">
+                  <div key={category.id} className="category-item">
                     <input
                       type="checkbox"
                       checked={category.visible}
                       onChange={() => onCategoryToggle(category.id)}
                     />
+                    <div className="color-picker-wrapper">
+                      <button
+                        className="category-color-swatch"
+                        style={{ backgroundColor: category.color || '#888888' }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setOpenColorPicker(openColorPicker === category.id ? null : category.id)
+                        }}
+                      />
+                      {openColorPicker === category.id && (
+                        <div className="bim-color-picker">
+                          {BIM_COLORS.map((color) => (
+                            <button
+                              key={color}
+                              className={`bim-color-option ${category.color === color ? 'selected' : ''}`}
+                              style={{ backgroundColor: color }}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleColorSelect(category.id, color)
+                              }}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <span className="category-name">{getCategoryDisplayName(category)}</span>
                     <span className="category-count">{category.count}</span>
-                  </label>
+                  </div>
                 ))
             )}
           </div>

@@ -109,18 +109,19 @@ export function IFCViewer({
 
   // Available drawing files from public/drawings (with pre-computed dimensions)
   // Some drawings have pre-defined alignment transforms for the model
+
   const AVAILABLE_DRAWINGS = [
     // { name: 'Cafe.png', path: '/drawings/Cafe.png', width: 2387, height: 1782 },
-    {
-      name: 'UNO3 Ground Level.png',
-      path: '/drawings/UNO3 Ground Level.png',
+     {
+      name: 'UNO3 Treasure.jpeg',
+      path: '/drawings/UNO3 Treasure.jpeg',
       width: 5184,
       height: 6912,
       alignmentTransform: {
         'UNO3A-DC-ARCH.ifc': {
           rotation: -0.0070 * Math.PI / 180, // degrees to radians
           scale: 0.999269,
-          translation: { x: -34685.6943, y: -388.2199, z: 24325.6559 }
+          translation: { x: -34685.6943, y: -387.2199, z: 24325.6559 }
         },
         'UNO3A-EYD.ifc': {
           rotation: 0.1040 * Math.PI / 180, // degrees to radians
@@ -130,6 +131,52 @@ export function IFCViewer({
         'UNO3A-MYD-ALL.ifc': {
           rotation: -0.0368 * Math.PI / 180, // degrees to radians
           scale: 0.994327,
+          translation: { x: -34527.0589, y: -377.0496, z: 24186.9114 }
+        }
+      }
+    },
+    {
+      name: 'UNO3 Ground Level.png',
+      path: '/drawings/UNO3 Ground Level.png',
+      width: 5184,
+      height: 6912,
+      alignmentTransform: {
+        'UNO3A-DC-ARCH.ifc': {
+          rotation: -0.0070 * Math.PI / 180, // degrees to radians
+          scale: 0.999269,
+          translation: { x: -34685.6943, y: -387.2199, z: 24325.6559 }
+        },
+        'UNO3A-EYD.ifc': {
+          rotation: 0.1040 * Math.PI / 180, // degrees to radians
+          scale: 1.369397,
+          translation: { x: -47469.1905, y: -484.8392, z: 33427.5292 }
+        },
+        'UNO3A-MYD-ALL.ifc': {
+          rotation: -0.0368 * Math.PI / 180, // degrees to radians
+          scale: 0.994327,
+          translation: { x: -34527.0589, y: -377.0496, z: 24186.9114 }
+        }
+      }
+    },
+    {
+      name: 'UNO3 Colorized.png',
+      path: '/drawings/UNO3 Colorized.png',
+      width: 5184,
+      height: 6912,
+      alignmentTransform: {
+        'UNO3A-DC-ARCH.ifc': {
+          rotation: -0 * Math.PI / 180, // degrees to radians
+          scale: 1,
+          translation: { x: -34685.6943, y: -388.2199, z: 24325.6559 }
+        },
+        'UNO3A-EYD.ifc': {
+          rotation: 0 * Math.PI / 180, // degrees to radians
+          scale: 1.369397,
+          translation: { x: -47469.1905, y: -484.8392, z: 33427.5292 }
+        },
+        'UNO3A-MYD-ALL.ifc': {
+          rotation: -0 * Math.PI / 180, // degrees to radians
+          scale: 1,
           translation: { x: -34527.0589, y: -377.0496, z: 24186.9114 }
         }
       }
@@ -280,6 +327,34 @@ export function IFCViewer({
   useEffect(() => {
     categoriesRef.current = categories
   }, [categories])
+
+  // Update mesh colors when category colors change
+  useEffect(() => {
+    if (!modelGroupRef.current) return
+
+    // Build a map of categoryId -> color
+    const categoryColors = new Map<number, string>()
+    for (const cat of categories) {
+      if (cat.color) {
+        categoryColors.set(cat.id, cat.color)
+      }
+    }
+
+    // Update mesh materials
+    modelGroupRef.current.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.userData.categoryId !== undefined) {
+        const color = categoryColors.get(obj.userData.categoryId)
+        if (color && obj.material instanceof THREE.MeshPhongMaterial) {
+          obj.material.color.set(color)
+        }
+      }
+    })
+
+    // Rebuild merged meshes if in performance mode to reflect new colors
+    if (performanceMode && mergedGroupRef.current) {
+      rebuildMergedMeshes()
+    }
+  }, [categories, performanceMode, rebuildMergedMeshes])
 
   useEffect(() => {
     selectedStoreyRef.current = selectedStorey
@@ -1720,7 +1795,7 @@ export function IFCViewer({
       await new Promise(resolve => setTimeout(resolve, 0))
 
       const modelGroup = modelGroupRef.current!
-      const categoryData: Map<number, { count: number; meshIds: number[] }> = new Map()
+      const categoryData: Map<number, { count: number; meshIds: number[]; color?: string }> = new Map()
 
       // Collect all mesh data first (synchronous callback)
       interface MeshData {
@@ -1750,12 +1825,15 @@ export function IFCViewer({
         }
 
         if (!categoryData.has(typeId)) {
-          categoryData.set(typeId, { count: 0, meshIds: [] })
+          categoryData.set(typeId, { count: 0, meshIds: [], color: undefined })
         }
         categoryData.get(typeId)!.count++
         categoryData.get(typeId)!.meshIds.push(expressID)
 
         const meshData: MeshData = { expressID, typeId, geometries: [] }
+
+        // Capture first color for this category
+        const catData = categoryData.get(typeId)!
         const placedGeometries = mesh.geometries
         for (let i = 0; i < placedGeometries.size(); i++) {
           const placedGeometry = placedGeometries.get(i)
@@ -1771,6 +1849,14 @@ export function IFCViewer({
           )
 
           if (verts.length === 0 || indices.length === 0) continue
+
+          // Capture first color for this category (convert to hex)
+          if (!catData.color) {
+            const r = Math.round(placedGeometry.color.x * 255)
+            const g = Math.round(placedGeometry.color.y * 255)
+            const b = Math.round(placedGeometry.color.z * 255)
+            catData.color = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+          }
 
           meshData.geometries.push({
             verts: new Float32Array(verts),
@@ -1963,7 +2049,8 @@ export function IFCViewer({
           name: getTypeName(id),
           count: data.count,
           visible: true,
-          meshIds: data.meshIds
+          meshIds: data.meshIds,
+          color: data.color
         }))
         .sort((a, b) => b.count - a.count)
 

@@ -38,6 +38,14 @@ function App() {
     setCategories(prev => prev.map(cat => ({ ...cat, visible })))
   }, [])
 
+  const handleCategoryColorChange = useCallback((categoryId: number, color: string) => {
+    setCategories(prev =>
+      prev.map(cat =>
+        cat.id === categoryId ? { ...cat, color } : cat
+      )
+    )
+  }, [])
+
   return (
     <div className="app">
       {ifcData ? (
@@ -55,6 +63,7 @@ function App() {
           <FilterPanel
             categories={categories}
             onCategoryToggle={handleCategoryToggle}
+            onCategoryColorChange={handleCategoryColorChange}
             onToggleAll={handleToggleAll}
             fileName={fileName}
             metadata={metadata}

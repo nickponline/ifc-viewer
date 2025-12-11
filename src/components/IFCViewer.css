@@ -1142,7 +1142,7 @@
   min-width: 140px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(74, 158, 255, 0.3);
+  border: 1px solid rgba(255, 140, 0, 0.3);
   border-radius: 8px;
   color: #fff;
   font-size: 13px;
@@ -1151,13 +1151,13 @@
 }
 
 .add-cameras-btn:hover {
-  background: rgba(74, 158, 255, 0.2);
-  border-color: #4a9eff;
+  background: rgba(255, 140, 0, 0.2);
+  border-color: #ff8c00;
 }
 
 .add-cameras-btn svg {
   flex-shrink: 0;
-  color: #4a9eff;
+  color: #ff8c00;
 }
 
 .cameras-toggle-all {

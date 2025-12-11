@@ -9,6 +9,7 @@ export interface ElementCategory {
   count: number
   visible: boolean
   meshIds: number[]
+  color?: string
 }
 
 export interface IFCMesh {
