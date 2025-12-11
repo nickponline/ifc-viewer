@@ -200,10 +200,14 @@ export function IFCViewer({
   const [selectedAlignmentPoint, setSelectedAlignmentPoint] = useState<'1' | '2' | 'A' | 'B'>('A')
 
   // Camera view state (for viewing images and fisheye from camera positions)
-  const [cameraViewMode, setCameraViewMode] = useState<'off' | 'image' | 'fisheye' | 'xray'>('off')
+  const [cameraViewMode, setCameraViewMode] = useState<'off' | 'image' | 'fisheye' | 'xray' | 'split'>('off')
   const [selectedCamera, setSelectedCamera] = useState<CameraMarker | null>(null)
   const [fisheyeImage, setFisheyeImage] = useState<string | null>(null)
   const [xrayBlend, setXrayBlend] = useState(0.5) // 0 = photo only, 1 = model only
+  const [splitPanOffset, setSplitPanOffset] = useState({ x: 50, y: 50 }) // Pan position as percentage
+  const [splitViewsLocked, setSplitViewsLocked] = useState(true)
+  const splitPanningRef = useRef(false)
+  const splitPanStartRef = useRef({ x: 0, y: 0, offsetX: 50, offsetY: 50 })
   const cubeRenderTargetRef = useRef<THREE.WebGLCubeRenderTarget | null>(null)
   const cubeCameraRef = useRef<THREE.CubeCamera | null>(null)
 
@@ -1358,9 +1362,9 @@ export function IFCViewer({
     setCameraViewMode('fisheye')
   }, [selectedCamera, captureFisheyeView])
 
-  // Re-capture fisheye when camera changes while in fisheye or xray mode
+  // Re-capture fisheye when camera changes while in fisheye, xray, or split mode
   useEffect(() => {
-    if ((cameraViewMode === 'fisheye' || cameraViewMode === 'xray') && selectedCamera) {
+    if ((cameraViewMode === 'fisheye' || cameraViewMode === 'xray' || cameraViewMode === 'split') && selectedCamera) {
       const point = selectedCamera.mesh.position.clone()
       point.y += 1
       const yaw = 2*Math.PI - (selectedCamera.location.yaw - Math.PI / 2) || 0
@@ -2196,11 +2200,59 @@ export function IFCViewer({
             <img src={`${selectedCamera.imagesPath}/${selectedCamera.image}`} alt={`Camera ${selectedCamera.id}`} className="fisheye-image" />
           ) : cameraViewMode === 'fisheye' ? (
             fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image fisheye-model" />
-          ) : (
+          ) : cameraViewMode === 'xray' ? (
             /* X-Ray mode: both images overlaid */
             <div className="xray-container">
               <img src={`${selectedCamera.imagesPath}/${selectedCamera.image}`} alt={`Camera ${selectedCamera.id}`} className="fisheye-image xray-photo" style={{ opacity: 1 - xrayBlend }} />
               {fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image fisheye-model xray-model" style={{ opacity: xrayBlend }} />}
+            </div>
+          ) : (
+            /* Split mode: side by side viewers */
+            <div
+              className="split-container"
+              onMouseDown={(e) => {
+                splitPanningRef.current = true
+                splitPanStartRef.current = {
+                  x: e.clientX,
+                  y: e.clientY,
+                  offsetX: splitPanOffset.x,
+                  offsetY: splitPanOffset.y
+                }
+              }}
+              onMouseMove={(e) => {
+                if (!splitPanningRef.current) return
+                const dx = (e.clientX - splitPanStartRef.current.x) / 5
+                const dy = (e.clientY - splitPanStartRef.current.y) / 5
+                setSplitPanOffset({
+                  x: Math.max(0, Math.min(100, splitPanStartRef.current.offsetX - dx)),
+                  y: Math.max(0, Math.min(100, splitPanStartRef.current.offsetY - dy))
+                })
+              }}
+              onMouseUp={() => { splitPanningRef.current = false }}
+              onMouseLeave={() => { splitPanningRef.current = false }}
+            >
+              <div className="split-pane split-pane-left">
+                <img
+                  src={`${selectedCamera.imagesPath}/${selectedCamera.image}`}
+                  alt={`Camera ${selectedCamera.id}`}
+                  className="fisheye-image split-pan-image"
+                  style={{ objectPosition: `${splitPanOffset.x}% ${splitPanOffset.y}%` }}
+                  draggable={false}
+                />
+                <div className="split-label">Photo</div>
+              </div>
+              <div className="split-pane split-pane-right">
+                {fisheyeImage && (
+                  <img
+                    src={fisheyeImage}
+                    alt="360 View"
+                    className="fisheye-image fisheye-model split-pan-image"
+                    style={{ objectPosition: splitViewsLocked ? `${100 - splitPanOffset.x}% ${splitPanOffset.y}%` : '50% 50%' }}
+                    draggable={false}
+                  />
+                )}
+                <div className="split-label">Model</div>
+              </div>
             </div>
           )}
           <div className="camera-view-controls">
@@ -2255,6 +2307,43 @@ export function IFCViewer({
                 className="xray-blend-slider"
                 title="Blend: Photo ↔ Model"
               />
+            )}
+            <button
+              className={`camera-view-toggle ${cameraViewMode === 'split' ? 'active' : ''}`}
+              onClick={() => {
+                if (cameraViewMode !== 'split') {
+                  // Need to capture fisheye for split mode
+                  const point = selectedCamera.mesh.position.clone()
+                  point.y += 1
+                  const yaw = 2*Math.PI - (selectedCamera.location.yaw - Math.PI / 2) || 0
+                  captureFisheyeView(point, yaw)
+                  setSplitPanOffset({ x: 50, y: 50 }) // Reset pan when entering split mode
+                  setCameraViewMode('split')
+                }
+              }}
+            >
+              Split
+            </button>
+            {cameraViewMode === 'split' && (
+              <button
+                className={`camera-view-toggle split-lock-btn ${splitViewsLocked ? 'active' : ''}`}
+                onClick={() => setSplitViewsLocked(!splitViewsLocked)}
+                title={splitViewsLocked ? 'Views locked - click to unlock' : 'Views unlocked - click to lock'}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                  {splitViewsLocked ? (
+                    <>
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </>
+                  ) : (
+                    <>
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                      <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+                    </>
+                  )}
+                </svg>
+              </button>
             )}
             <button
               className="camera-nav-btn"

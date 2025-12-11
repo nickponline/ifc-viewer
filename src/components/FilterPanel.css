@@ -20,14 +20,24 @@
   min-width: auto;
 }
 
+.filter-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.filter-panel.collapsed .filter-header-row {
+  margin-bottom: 0;
+}
+
 .filter-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  width: 100%;
+  flex: 1;
   padding: 0;
-  margin-bottom: 8px;
   background: transparent;
   border: none;
   color: #4a9eff;
@@ -44,8 +54,24 @@
   color: #fff;
 }
 
-.filter-panel.collapsed .filter-header {
-  margin-bottom: 0;
+.toggle-all-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  color: #4a9eff;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.toggle-all-btn:hover {
+  color: #fff;
+}
+
+.toggle-all-btn.all-hidden {
+  color: #555;
 }
 
 .filter-chevron {
@@ -122,33 +148,6 @@
 .storey-select option {
   background: #1a1a2e;
   color: #fff;
-}
-
-.filter-actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.action-btn {
-  flex: 1;
-  padding: 8px 12px;
-  background: rgba(74, 158, 255, 0.2);
-  border: 1px solid rgba(74, 158, 255, 0.3);
-  border-radius: 6px;
-  color: #4a9eff;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.action-btn:hover:not(:disabled) {
-  background: rgba(74, 158, 255, 0.3);
-}
-
-.action-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .category-list {
