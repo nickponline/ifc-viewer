@@ -267,7 +267,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  min-width: 240px;
+  width: 280px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -339,6 +339,13 @@
 
 .align-drawing-btn:hover {
   color: #4a9eff;
+}
+
+.auto-aligned-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
 }
 
 .drawing-opacity-slider {
@@ -645,6 +652,37 @@
   top: 0;
   left: 0;
   opacity: 0.5;
+}
+
+.xray-blend-slider {
+  width: 80px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  cursor: pointer;
+  margin: 0 4px;
+  align-self: center;
+}
+
+.xray-blend-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #4a9eff;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.xray-blend-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: #4a9eff;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
 }
 
 .fisheye-hint {
@@ -1171,7 +1209,7 @@
   flex-direction: column;
   gap: 6px;
   padding: 8px 12px;
-  min-width: 240px;
+  width: 280px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);

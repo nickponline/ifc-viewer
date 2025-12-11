@@ -80,6 +80,7 @@ export function IFCViewer({
     mesh: THREE.Mesh
     visible: boolean
     opacity: number
+    autoAligned?: boolean
   }
   const [drawings, setDrawings] = useState<DrawingPlane[]>([])
   const [showDrawingPicker, setShowDrawingPicker] = useState(false)
@@ -101,7 +102,7 @@ export function IFCViewer({
     yOffset: number
   }
   const [cameraSets, setCameraSets] = useState<CameraSet[]>([])
-  const [camerasVisible, setCamerasVisible] = useState(true)
+  const camerasVisible = true
   const [showCameraPicker, setShowCameraPicker] = useState(false)
   const [loadingCameras, setLoadingCameras] = useState<string | null>(null)
   const [selectedCameraSetId, setSelectedCameraSetId] = useState<string | null>(null)
@@ -155,6 +156,7 @@ export function IFCViewer({
   const [cameraViewMode, setCameraViewMode] = useState<'off' | 'image' | 'fisheye' | 'xray'>('off')
   const [selectedCamera, setSelectedCamera] = useState<CameraMarker | null>(null)
   const [fisheyeImage, setFisheyeImage] = useState<string | null>(null)
+  const [xrayBlend, setXrayBlend] = useState(0.5) // 0 = photo only, 1 = model only
   const cubeRenderTargetRef = useRef<THREE.WebGLCubeRenderTarget | null>(null)
   const cubeCameraRef = useRef<THREE.CubeCamera | null>(null)
 
@@ -369,7 +371,8 @@ export function IFCViewer({
         name: name,
         mesh: plane,
         visible: true,
-        opacity: 1
+        opacity: 1,
+        autoAligned: !!alignmentTransform
       }
 
       setDrawings(prev => [...prev, drawing])
@@ -584,20 +587,6 @@ export function IFCViewer({
       return cs
     }))
   }, [])
-
-  // Toggle all cameras visibility
-  const handleToggleCameras = useCallback(() => {
-    const newVisible = !camerasVisible
-    setCamerasVisible(newVisible)
-    // Update visibility of all camera markers
-    for (const cameraSet of cameraSets) {
-      if (cameraSet.visible) {
-        for (const cam of cameraSet.cameras) {
-          cam.mesh.visible = newVisible
-        }
-      }
-    }
-  }, [camerasVisible, cameraSets])
 
   // Start alignment mode for a drawing
   const handleStartAlign = useCallback((id: string) => {
@@ -2123,8 +2112,8 @@ export function IFCViewer({
           ) : (
             /* X-Ray mode: both images overlaid */
             <div className="xray-container">
-              <img src={`${selectedCamera.imagesPath}/${selectedCamera.image}`} alt={`Camera ${selectedCamera.id}`} className="fisheye-image xray-photo" />
-              {fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image fisheye-model xray-model" />}
+              <img src={`${selectedCamera.imagesPath}/${selectedCamera.image}`} alt={`Camera ${selectedCamera.id}`} className="fisheye-image xray-photo" style={{ opacity: 1 - xrayBlend }} />
+              {fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image fisheye-model xray-model" style={{ opacity: xrayBlend }} />}
             </div>
           )}
           <div className="camera-view-controls">
@@ -2168,6 +2157,18 @@ export function IFCViewer({
             >
               X-Ray
             </button>
+            {cameraViewMode === 'xray' && (
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={xrayBlend}
+                onChange={(e) => setXrayBlend(parseFloat(e.target.value))}
+                className="xray-blend-slider"
+                title="Blend: Photo ↔ Model"
+              />
+            )}
             <button
               className="camera-nav-btn"
               onClick={() => navigateCamera('next')}
@@ -2210,7 +2211,7 @@ export function IFCViewer({
                 <button
                   key={drawing.name}
                   className={`drawing-picker-item ${loadingDrawing === drawing.name ? 'loading' : ''}`}
-                  onClick={() => handleAddDrawingFromPath(drawing.name, drawing.path, drawing.width, drawing.height, (drawing as any).alignmentTransform)}
+                  onClick={() => handleAddDrawingFromPath(drawing.name, drawing.path, drawing.width, drawing.height, (drawing as any).alignmentTransform?.[fileName])}
                   disabled={loadingDrawing !== null}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -2317,16 +2318,24 @@ export function IFCViewer({
                 <span className="drawing-name" title={drawing.name}>
                   {drawing.name}
                 </span>
-                <button
-                  className="align-drawing-btn"
-                  onClick={() => handleStartAlign(drawing.id)}
-                  title="Align drawing to model"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                    <path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>
-                  </svg>
-                </button>
+                {drawing.autoAligned ? (
+                  <span className="auto-aligned-check" title="Auto-aligned">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="3" width="14" height="14">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </span>
+                ) : (
+                  <button
+                    className="align-drawing-btn"
+                    onClick={() => handleStartAlign(drawing.id)}
+                    title="Align drawing to model"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/>
+                      <path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>
+                    </svg>
+                  </button>
+                )}
                 <button
                   className="remove-drawing-btn"
                   onClick={() => handleRemoveDrawing(drawing.id)}

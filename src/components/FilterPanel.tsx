@@ -163,17 +163,19 @@ export function FilterPanel({
             {categories.length === 0 ? (
               <div className="loading">Loading categories...</div>
             ) : (
-              categories.map(category => (
-                <label key={category.id} className="category-item">
-                  <input
-                    type="checkbox"
-                    checked={category.visible}
-                    onChange={() => onCategoryToggle(category.id)}
-                  />
-                  <span className="category-name">{getCategoryDisplayName(category)}</span>
-                  <span className="category-count">{category.count}</span>
-                </label>
-              ))
+              [...categories]
+                .sort((a, b) => getCategoryDisplayName(a).localeCompare(getCategoryDisplayName(b)))
+                .map(category => (
+                  <label key={category.id} className="category-item">
+                    <input
+                      type="checkbox"
+                      checked={category.visible}
+                      onChange={() => onCategoryToggle(category.id)}
+                    />
+                    <span className="category-name">{getCategoryDisplayName(category)}</span>
+                    <span className="category-count">{category.count}</span>
+                  </label>
+                ))
             )}
           </div>
         </>
