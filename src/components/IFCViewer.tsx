@@ -11,20 +11,24 @@ import './IFCViewer.css'
 
 interface IFCViewerProps {
   ifcData: ArrayBuffer
+  fileName: string
   categories: ElementCategory[]
   onCategoriesLoaded: (categories: ElementCategory[]) => void
   onMetadataLoaded: (metadata: IFCMetadata) => void
   selectedStorey: number | null
   storeys: StoreyInfo[]
+  onGalleryViewChange?: (isGalleryView: boolean) => void
 }
 
 export function IFCViewer({
   ifcData,
+  fileName,
   categories,
   onCategoriesLoaded,
   onMetadataLoaded,
   selectedStorey,
-  storeys
+  storeys,
+  onGalleryViewChange
 }: IFCViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
@@ -52,7 +56,7 @@ export function IFCViewer({
     mergedMeshes: 0,
     pixelRatio: 1
   })
-  const [diagnosticsCollapsed, setDiagnosticsCollapsed] = useState(false)
+  const [diagnosticsCollapsed, setDiagnosticsCollapsed] = useState(true)
 
   // High performance mode
   const [performanceMode, setPerformanceMode] = useState(true)
@@ -75,6 +79,7 @@ export function IFCViewer({
     name: string
     mesh: THREE.Mesh
     visible: boolean
+    opacity: number
   }
   const [drawings, setDrawings] = useState<DrawingPlane[]>([])
   const [showDrawingPicker, setShowDrawingPicker] = useState(false)
@@ -102,15 +107,38 @@ export function IFCViewer({
   const [selectedCameraSetId, setSelectedCameraSetId] = useState<string | null>(null)
 
   // Available drawing files from public/drawings (with pre-computed dimensions)
+  // Some drawings have pre-defined alignment transforms for the model
   const AVAILABLE_DRAWINGS = [
-    { name: 'Cafe.png', path: '/drawings/Cafe.png', width: 2387, height: 1782 },
-    { name: 'UNO3 Ground Level.png', path: '/drawings/UNO3 Ground Level.png', width: 5184, height: 6912 },
+    // { name: 'Cafe.png', path: '/drawings/Cafe.png', width: 2387, height: 1782 },
+    {
+      name: 'UNO3 Ground Level.png',
+      path: '/drawings/UNO3 Ground Level.png',
+      width: 5184,
+      height: 6912,
+      alignmentTransform: {
+        'UNO3A-DC-ARCH.ifc': {
+          rotation: -0.0070 * Math.PI / 180, // degrees to radians
+          scale: 0.999269,
+          translation: { x: -34685.6943, y: -388.2199, z: 24325.6559 }
+        },
+        'UNO3A-EYD.ifc': {
+          rotation: 0.1040 * Math.PI / 180, // degrees to radians
+          scale: 1.369397,
+          translation: { x: -47469.1905, y: -484.8392, z: 33427.5292 }
+        },
+        'UNO3A-MYD-ALL.ifc': {
+          rotation: -0.0368 * Math.PI / 180, // degrees to radians
+          scale: 0.994327,
+          translation: { x: -34527.0589, y: -377.0496, z: 24186.9114 }
+        }
+      }
+    },
   ]
 
   // Available camera files from public/walkthroughs
   const AVAILABLE_WALKTHROUGHS = [
-    { name: '6930a2ed1837c39750badd5d', files: ['cameras_hitl.json'] },
-    { name: '6930a07ad42b53733abadd59', files: ['cameras_hitl.json'] },
+    { name: '6930a2ed1837c39750badd5d', files: ['cameras_hitl.json'], displayName: 'Data Hall' },
+    { name: '6930a07ad42b53733abadd59', files: ['cameras_hitl.json'], displayName: 'Office' },
   ]
 
   // Alignment mode state
@@ -124,11 +152,16 @@ export function IFCViewer({
   const [selectedAlignmentPoint, setSelectedAlignmentPoint] = useState<'1' | '2' | 'A' | 'B'>('A')
 
   // Camera view state (for viewing images and fisheye from camera positions)
-  const [cameraViewMode, setCameraViewMode] = useState<'off' | 'image' | 'fisheye'>('off')
+  const [cameraViewMode, setCameraViewMode] = useState<'off' | 'image' | 'fisheye' | 'xray'>('off')
   const [selectedCamera, setSelectedCamera] = useState<CameraMarker | null>(null)
   const [fisheyeImage, setFisheyeImage] = useState<string | null>(null)
   const cubeRenderTargetRef = useRef<THREE.WebGLCubeRenderTarget | null>(null)
   const cubeCameraRef = useRef<THREE.CubeCamera | null>(null)
+
+  // Notify parent when gallery view changes
+  useEffect(() => {
+    onGalleryViewChange?.(cameraViewMode !== 'off')
+  }, [cameraViewMode, onGalleryViewChange])
 
   // Original model transform for reset
   const originalTransformRef = useRef<{
@@ -237,9 +270,7 @@ export function IFCViewer({
       } else {
         // Restore original pixel ratio
         rendererRef.current.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-        // Reset visibility - show individual meshes, hide merged
-        if (modelGroupRef.current) modelGroupRef.current.visible = true
-        if (mergedGroupRef.current) mergedGroupRef.current.visible = false
+        // Visibility will be handled by animation loop
       }
     }
   }, [performanceMode])
@@ -289,8 +320,14 @@ export function IFCViewer({
   }>({ loading: true, stage: 'Initializing...', meshCount: 0, totalMeshes: 0 })
 
   // Add drawing plane from URL path (uses pre-defined dimensions from AVAILABLE_DRAWINGS)
-  const handleAddDrawingFromPath = useCallback(async (name: string, path: string, width: number, height: number) => {
-    if (!sceneRef.current || !modelGroupRef.current) return
+  const handleAddDrawingFromPath = useCallback(async (
+    name: string,
+    path: string,
+    width: number,
+    height: number,
+    alignmentTransform?: { rotation: number; scale: number; translation: { x: number; y: number; z: number } }
+  ) => {
+    if (!sceneRef.current || !modelGroupRef.current || !mergedGroupRef.current) return
 
     setLoadingDrawing(name)
     try {
@@ -298,7 +335,7 @@ export function IFCViewer({
         new THREE.TextureLoader().load(path, resolve, undefined, reject)
       })
 
-      // Get model bounds to size the plane appropriately
+      // Get model bounds to size the plane appropriately (before any transform)
       const box = new THREE.Box3().setFromObject(modelGroupRef.current!)
       const size = box.getSize(new THREE.Vector3())
       const center = box.getCenter(new THREE.Vector3())
@@ -331,11 +368,29 @@ export function IFCViewer({
         id: crypto.randomUUID(),
         name: name,
         mesh: plane,
-        visible: true
+        visible: true,
+        opacity: 1
       }
 
       setDrawings(prev => [...prev, drawing])
       setShowDrawingPicker(false)
+
+      // Apply alignment transform after placing the drawing
+      if (alignmentTransform) {
+        const { rotation, scale, translation } = alignmentTransform
+
+        // Apply to model group
+        modelGroupRef.current.rotation.y = rotation
+        modelGroupRef.current.scale.set(scale, scale, scale)
+        modelGroupRef.current.position.set(translation.x, translation.y, translation.z)
+
+        // Apply to merged group
+        mergedGroupRef.current.rotation.y = rotation
+        mergedGroupRef.current.scale.set(scale, scale, scale)
+        mergedGroupRef.current.position.set(translation.x, translation.y, translation.z)
+
+        console.log('Applied pre-defined alignment transform for', name)
+      }
     } catch (err) {
       console.error('Failed to load drawing:', err)
       alert('Failed to load drawing')
@@ -372,6 +427,20 @@ export function IFCViewer({
     }))
   }, [])
 
+  // Change drawing opacity
+  const handleDrawingOpacity = useCallback((id: string, opacity: number) => {
+    setDrawings(prev => prev.map(d => {
+      if (d.id === id) {
+        const material = d.mesh.material as THREE.MeshBasicMaterial
+        material.opacity = opacity
+        material.transparent = opacity < 1
+        material.needsUpdate = true
+        return { ...d, opacity }
+      }
+      return d
+    }))
+  }, [])
+
   // Update minimum pan Y based on visible drawing planes
   useEffect(() => {
     const visibleDrawings = drawings.filter(d => d.visible)
@@ -386,10 +455,19 @@ export function IFCViewer({
   const handleAddCameraSet = useCallback(async (name: string, jsonPath: string, imagesPath: string) => {
     if (!sceneRef.current) return
 
-    // Check if this camera set is already loaded
-    if (cameraSets.some(cs => cs.name === name)) {
-      return
+    // Remove all existing camera sets first
+    for (const existingSet of cameraSets) {
+      for (const cam of existingSet.cameras) {
+        sceneRef.current.remove(cam.mesh)
+        cam.mesh.geometry.dispose()
+        if (cam.mesh.material instanceof THREE.Material) {
+          cam.mesh.material.dispose()
+        }
+      }
     }
+    setCameraSets([])
+    setSelectedCamera(null)
+    setSelectedCameraSetId(null)
 
     setLoadingCameras(name)
     try {
@@ -413,9 +491,9 @@ export function IFCViewer({
         const planeHeight = drawingGeometry.parameters.height
         const planeY = drawingCenter.y
 
-        const sphereRadius = Math.max(planeWidth, planeHeight) * 0.002
+        const sphereRadius = Math.max(planeWidth, planeHeight) * 0.00125
         const sphereGeometry = new THREE.SphereGeometry(sphereRadius, 12, 12)
-        const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0xff8c00 })
+        const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x2266aa })
 
         const cameraMarkers: CameraMarker[] = []
 
@@ -429,6 +507,7 @@ export function IFCViewer({
             sphere.position.set(worldX, planeY + sphereRadius * 2, worldZ)
             sphere.userData.cameraId = cam.id
             sphere.visible = camerasVisible
+
             sceneRef.current!.add(sphere)
 
             cameraMarkers.push({
@@ -635,7 +714,7 @@ export function IFCViewer({
     if (selectedAlignmentPoint !== '1' && selectedAlignmentPoint !== '2') return
 
     const index = selectedAlignmentPoint === '1' ? 0 : 1
-    const sphereRadius = sphericalRef.current.radius * 0.005
+    const sphereRadius = sphericalRef.current.radius * 0.0025
 
     // Update drawing alignment points
     const newPoints = [...alignmentPoints]
@@ -645,13 +724,11 @@ export function IFCViewer({
     // Create or update sphere marker (blue for drawing points)
     if (alignmentMarkersRef.current[index]) {
       alignmentMarkersRef.current[index]!.position.copy(point)
-      alignmentMarkersRef.current[index]!.position.y += sphereRadius
     } else {
       const sphereGeometry = new THREE.SphereGeometry(sphereRadius, 16, 16)
       const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x2266aa })
       const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial)
       sphere.position.copy(point)
-      sphere.position.y += sphereRadius
       sceneRef.current.add(sphere)
       alignmentMarkersRef.current[index] = sphere
     }
@@ -677,7 +754,7 @@ export function IFCViewer({
     if (selectedAlignmentPoint !== 'A' && selectedAlignmentPoint !== 'B') return
 
     const index = selectedAlignmentPoint === 'A' ? 0 : 1
-    const sphereRadius = sphericalRef.current.radius * 0.005
+    const sphereRadius = sphericalRef.current.radius * 0.0025
 
     // Update model alignment points
     const newPoints = [...modelAlignmentPoints]
@@ -687,13 +764,11 @@ export function IFCViewer({
     // Create or update sphere marker (red for model points)
     if (modelAlignmentMarkersRef.current[index]) {
       modelAlignmentMarkersRef.current[index]!.position.copy(point)
-      modelAlignmentMarkersRef.current[index]!.position.y += sphereRadius
     } else {
       const sphereGeometry = new THREE.SphereGeometry(sphereRadius, 16, 16)
       const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0xaa2222 })
       const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial)
       sphere.position.copy(point)
-      sphere.position.y += sphereRadius
       sceneRef.current.add(sphere)
       modelAlignmentMarkersRef.current[index] = sphere
     }
@@ -955,6 +1030,17 @@ export function IFCViewer({
     const maxDim = Math.max(newSize.x, newSize.y, newSize.z)
     modelSizeRef.current = maxDim
 
+    // Log the final transform values
+    console.log('=== ALIGNMENT TRANSFORM APPLIED ===')
+    console.log('Rotation (Y-axis):', (modelGroup.rotation.y * 180 / Math.PI).toFixed(4), 'degrees')
+    console.log('Scale:', modelGroup.scale.x.toFixed(6))
+    console.log('Translation:', {
+      x: modelGroup.position.x.toFixed(4),
+      y: modelGroup.position.y.toFixed(4),
+      z: modelGroup.position.z.toFixed(4)
+    })
+    console.log('===================================')
+
     // Clean up alignment mode
     handleCancelAlign()
   }, [aligningDrawingId, drawings, handleCancelAlign])
@@ -1173,6 +1259,27 @@ export function IFCViewer({
     setCameraViewMode('image')
   }, [])
 
+  // Navigate to previous/next camera
+  const navigateCamera = useCallback((direction: 'prev' | 'next') => {
+    if (!selectedCamera) return
+
+    // Find which camera set contains the selected camera
+    for (const cameraSet of cameraSets) {
+      const index = cameraSet.cameras.findIndex(c => c.id === selectedCamera.id)
+      if (index !== -1) {
+        const cameras = cameraSet.cameras
+        let newIndex: number
+        if (direction === 'prev') {
+          newIndex = index === 0 ? cameras.length - 1 : index - 1
+        } else {
+          newIndex = index === cameras.length - 1 ? 0 : index + 1
+        }
+        setSelectedCamera(cameras[newIndex])
+        return
+      }
+    }
+  }, [selectedCamera, cameraSets])
+
   // Capture fisheye view from selected camera position
   const captureFisheyeFromCamera = useCallback(() => {
     if (!selectedCamera) return
@@ -1182,10 +1289,20 @@ export function IFCViewer({
     point.y += 1
     // Get yaw from camera location (default to 0 if not present)
     // NOTE: The yaw is in the opposite direction of the camera's rotation, so we need to negate it.
-    const yaw = selectedCamera.location.yaw || 0
+    const yaw = 2*Math.PI - (selectedCamera.location.yaw - Math.PI / 2) || 0
     captureFisheyeView(point, yaw)
     setCameraViewMode('fisheye')
   }, [selectedCamera, captureFisheyeView])
+
+  // Re-capture fisheye when camera changes while in fisheye or xray mode
+  useEffect(() => {
+    if ((cameraViewMode === 'fisheye' || cameraViewMode === 'xray') && selectedCamera) {
+      const point = selectedCamera.mesh.position.clone()
+      point.y += 1
+      const yaw = 2*Math.PI - (selectedCamera.location.yaw - Math.PI / 2) || 0
+      captureFisheyeView(point, yaw)
+    }
+  }, [selectedCamera, cameraViewMode, captureFisheyeView])
 
   // Camera control state
   const isMouseDownRef = useRef(false)
@@ -1318,9 +1435,13 @@ export function IFCViewer({
       animationIdRef.current = requestAnimationFrame(animate)
 
       // Performance mode handling - always use merged meshes (they're rebuilt on visibility change)
-      if (performanceModeRef.current && modelGroupRef.current && mergedGroupRef.current) {
-        modelGroupRef.current.visible = false
-        mergedGroupRef.current.visible = true
+      if (modelGroupRef.current) {
+        // In performance mode, individual meshes are hidden
+        modelGroupRef.current.visible = !performanceModeRef.current
+      }
+      if (mergedGroupRef.current) {
+        // In performance mode, merged meshes are shown
+        mergedGroupRef.current.visible = performanceModeRef.current
       }
 
       // Use the appropriate camera based on camera type
@@ -1844,6 +1965,7 @@ export function IFCViewer({
         scale: modelGroup.scale.clone()
       }
 
+
       // Build categories for UI
       const categoriesArray: ElementCategory[] = Array.from(categoryData.entries())
         .filter(([, data]) => data.count > 0)
@@ -1875,7 +1997,7 @@ export function IFCViewer({
         }
       }
     }
-  }, [ifcData, onCategoriesLoaded, onMetadataLoaded, updateCameraFromSpherical])
+  }, [ifcData, fileName, onCategoriesLoaded, onMetadataLoaded, updateCameraFromSpherical])
 
   // Update visibility based on categories and selected storey
   useEffect(() => {
@@ -1991,114 +2113,30 @@ export function IFCViewer({
         )}
       </div>
 
-      {/* Cameras panel - bottom left */}
-      <div className="cameras-panel">
-        <button
-          className="add-cameras-btn"
-          onClick={() => setShowCameraPicker(true)}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-            <circle cx="12" cy="13" r="4"/>
-          </svg>
-          Add Cameras
-        </button>
-        {cameraSets.length > 0 && (
-          <>
-            <div className="cameras-toggle-all">
-              <button
-                className={`toggle-all-cameras-btn ${!camerasVisible ? 'hidden' : ''}`}
-                onClick={handleToggleCameras}
-                title={camerasVisible ? 'Hide all cameras' : 'Show all cameras'}
-              >
-                {camerasVisible ? (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                    <line x1="1" y1="1" x2="23" y2="23"/>
-                  </svg>
-                )}
-              </button>
-              <span className="cameras-count-label">
-                {cameraSets.reduce((sum, cs) => sum + cs.cameras.length, 0)} cameras
-              </span>
-            </div>
-            <div className="camera-sets-list">
-              {cameraSets.map((cameraSet) => (
-                <div
-                  key={cameraSet.id}
-                  className={`camera-set-item ${!cameraSet.visible ? 'hidden' : ''} ${selectedCameraSetId === cameraSet.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedCameraSetId(selectedCameraSetId === cameraSet.id ? null : cameraSet.id)}
-                >
-                  <div className="camera-set-row">
-                    <button
-                      className="toggle-camera-set-btn"
-                      onClick={(e) => { e.stopPropagation(); handleToggleCameraSet(cameraSet.id); }}
-                      title={cameraSet.visible ? 'Hide camera set' : 'Show camera set'}
-                    >
-                      {cameraSet.visible ? (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                          <circle cx="12" cy="12" r="3"/>
-                        </svg>
-                      ) : (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                          <line x1="1" y1="1" x2="23" y2="23"/>
-                        </svg>
-                      )}
-                    </button>
-                    <span className="camera-set-name" title={cameraSet.name}>
-                      {cameraSet.name}
-                    </span>
-                    <span className="camera-set-count">{cameraSet.cameras.length}</span>
-                    <button
-                      className="remove-camera-set-btn"
-                      onClick={(e) => { e.stopPropagation(); handleRemoveCameraSet(cameraSet.id); }}
-                      title="Remove camera set"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                      </svg>
-                    </button>
-                  </div>
-                  {selectedCameraSetId === cameraSet.id && (
-                    <div className="camera-set-y-offset" onMouseDown={(e) => e.stopPropagation()} onMouseMove={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
-                      <span className="camera-set-y-label">Y</span>
-                      <input
-                        type="range"
-                        min="-50"
-                        max="50"
-                        step="0.5"
-                        value={cameraSet.yOffset}
-                        onChange={(e) => handleCameraSetYOffset(cameraSet.id, parseFloat(e.target.value))}
-                        className="camera-set-y-slider"
-                      />
-                      <span className="camera-set-y-value">{cameraSet.yOffset.toFixed(1)}</span>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-
       {/* Camera view overlay */}
       {cameraViewMode !== 'off' && selectedCamera && (
         <div className="fisheye-overlay">
           {cameraViewMode === 'image' ? (
             <img src={`${selectedCamera.imagesPath}/${selectedCamera.image}`} alt={`Camera ${selectedCamera.id}`} className="fisheye-image" />
+          ) : cameraViewMode === 'fisheye' ? (
+            fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image fisheye-model" />
           ) : (
-            fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image" />
+            /* X-Ray mode: both images overlaid */
+            <div className="xray-container">
+              <img src={`${selectedCamera.imagesPath}/${selectedCamera.image}`} alt={`Camera ${selectedCamera.id}`} className="fisheye-image xray-photo" />
+              {fisheyeImage && <img src={fisheyeImage} alt="360 View" className="fisheye-image fisheye-model xray-model" />}
+            </div>
           )}
           <div className="camera-view-controls">
+            <button
+              className="camera-nav-btn"
+              onClick={() => navigateCamera('prev')}
+              title="Previous camera"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+            </button>
             <button
               className={`camera-view-toggle ${cameraViewMode === 'image' ? 'active' : ''}`}
               onClick={() => setCameraViewMode('image')}
@@ -2113,7 +2151,31 @@ export function IFCViewer({
                 }
               }}
             >
-              3D View
+              Model
+            </button>
+            <button
+              className={`camera-view-toggle ${cameraViewMode === 'xray' ? 'active' : ''}`}
+              onClick={() => {
+                if (cameraViewMode !== 'xray') {
+                  // Need to capture fisheye for xray mode
+                  const point = selectedCamera.mesh.position.clone()
+                  point.y += 1
+                  const yaw = 2*Math.PI - (selectedCamera.location.yaw - Math.PI / 2) || 0
+                  captureFisheyeView(point, yaw)
+                  setCameraViewMode('xray')
+                }
+              }}
+            >
+              X-Ray
+            </button>
+            <button
+              className="camera-nav-btn"
+              onClick={() => navigateCamera('next')}
+              title="Next camera"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
             </button>
             <button
               className="camera-view-close"
@@ -2148,7 +2210,7 @@ export function IFCViewer({
                 <button
                   key={drawing.name}
                   className={`drawing-picker-item ${loadingDrawing === drawing.name ? 'loading' : ''}`}
-                  onClick={() => handleAddDrawingFromPath(drawing.name, drawing.path, drawing.width, drawing.height)}
+                  onClick={() => handleAddDrawingFromPath(drawing.name, drawing.path, drawing.width, drawing.height, (drawing as any).alignmentTransform)}
                   disabled={loadingDrawing !== null}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -2184,11 +2246,11 @@ export function IFCViewer({
                     <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
                       <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
                     </svg>
-                    <span>{walkthrough.name}</span>
+                    <span>{walkthrough.displayName}</span>
                   </div>
                   <div className="camera-picker-files">
                     {walkthrough.files.map((file) => {
-                      const cameraSetName = `${walkthrough.name}/${file}`
+                      const cameraSetName = `${walkthrough.displayName}`
                       const isAlreadyLoaded = cameraSets.some(cs => cs.name === cameraSetName)
                       return (
                       <button
@@ -2205,7 +2267,7 @@ export function IFCViewer({
                           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                           <polyline points="14,2 14,8 20,8"/>
                         </svg>
-                        <span className="camera-picker-item-name">{file}</span>
+                        <span className="camera-picker-item-name">cameras.json</span>
                       </button>
                       )
                     })}
@@ -2217,7 +2279,8 @@ export function IFCViewer({
         </div>
       )}
 
-      {/* Drawing planes panel */}
+      {/* Drawing and cameras panels - bottom right */}
+      <div className="bottom-right-panels">
       <div className="drawings-panel">
         <button
           className="add-drawing-btn"
@@ -2274,10 +2337,95 @@ export function IFCViewer({
                     <line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
                 </button>
+                <input
+                  type="range"
+                  className="drawing-opacity-slider"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={drawing.opacity}
+                  onChange={(e) => handleDrawingOpacity(drawing.id, parseFloat(e.target.value))}
+                  title={`Opacity: ${Math.round(drawing.opacity * 100)}%`}
+                />
               </div>
             ))}
           </div>
         )}
+      </div>
+
+      {/* Cameras panel - bottom right */}
+      <div className="cameras-panel">
+        <button
+          className="add-cameras-btn"
+          onClick={() => setShowCameraPicker(true)}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          Add Cameras
+        </button>
+        {cameraSets.length > 0 && (
+          <div className="camera-sets-list">
+            {cameraSets.map((cameraSet) => (
+              <div
+                key={cameraSet.id}
+                className={`camera-set-item ${!cameraSet.visible ? 'hidden' : ''} ${selectedCameraSetId === cameraSet.id ? 'selected' : ''}`}
+                onClick={() => setSelectedCameraSetId(selectedCameraSetId === cameraSet.id ? null : cameraSet.id)}
+              >
+                <div className="camera-set-row">
+                  <button
+                    className="toggle-camera-set-btn"
+                    onClick={(e) => { e.stopPropagation(); handleToggleCameraSet(cameraSet.id); }}
+                    title={cameraSet.visible ? 'Hide camera set' : 'Show camera set'}
+                  >
+                    {cameraSet.visible ? (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                    )}
+                  </button>
+                  <span className="camera-set-name" title={cameraSet.name}>
+                    {cameraSet.name}
+                  </span>
+                  <span className="camera-set-count">{cameraSet.cameras.length}</span>
+                  <button
+                    className="remove-camera-set-btn"
+                    onClick={(e) => { e.stopPropagation(); handleRemoveCameraSet(cameraSet.id); }}
+                    title="Remove camera set"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <line x1="18" y1="6" x2="6" y2="18"/>
+                      <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+                {selectedCameraSetId === cameraSet.id && (
+                  <div className="camera-set-y-offset" onMouseDown={(e) => e.stopPropagation()} onMouseMove={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+                    <span className="camera-set-y-label">Y</span>
+                    <input
+                      type="range"
+                      min="-50"
+                      max="50"
+                      step="0.5"
+                      value={cameraSet.yOffset}
+                      onChange={(e) => handleCameraSetYOffset(cameraSet.id, parseFloat(e.target.value))}
+                      className="camera-set-y-slider"
+                    />
+                    <span className="camera-set-y-value">{cameraSet.yOffset.toFixed(1)}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       </div>
 
       {/* Alignment mode overlay */}

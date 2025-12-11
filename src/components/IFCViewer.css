@@ -208,8 +208,8 @@
   font-size: 12px;
 }
 
-/* Drawings panel */
-.drawings-panel {
+/* Bottom right panels container */
+.bottom-right-panels {
   position: fixed;
   bottom: 20px;
   right: 20px;
@@ -219,14 +219,24 @@
   gap: 8px;
 }
 
+/* Drawings panel */
+.drawings-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .add-drawing-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   padding: 10px 16px;
+  min-width: 140px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(74, 158, 255, 0.3);
   border-radius: 8px;
   color: #fff;
   font-size: 13px;
@@ -241,6 +251,7 @@
 
 .add-drawing-btn svg {
   flex-shrink: 0;
+  color: #4a9eff;
 }
 
 .drawings-list {
@@ -256,6 +267,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  min-width: 240px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -327,6 +339,41 @@
 
 .align-drawing-btn:hover {
   color: #4a9eff;
+}
+
+.drawing-opacity-slider {
+  width: 60px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.drawing-opacity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #4a9eff;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.drawing-opacity-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #4a9eff;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.drawing-item.hidden .drawing-opacity-slider {
+  opacity: 0.3;
+  pointer-events: none;
 }
 
 /* Alignment mode overlay */
@@ -575,6 +622,31 @@
   object-fit: contain;
 }
 
+.fisheye-model {
+  transform: scaleX(-1);
+}
+
+/* X-Ray mode styles */
+.xray-container {
+  position: relative;
+  width: min(100vw, calc((100vh - 60px) * 2));
+  height: min(calc(100vw / 2), calc(100vh - 60px));
+}
+
+.xray-photo {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0.5;
+}
+
+.xray-model {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0.5;
+}
+
 .fisheye-hint {
   position: absolute;
   bottom: 20px;
@@ -633,6 +705,25 @@
 .camera-view-close:hover {
   background: rgba(255, 74, 74, 0.2);
   border-color: #ff4a4a;
+}
+
+.camera-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #aaa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.camera-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 /* Drawing picker modal */
@@ -998,23 +1089,22 @@
 
 /* Updated cameras panel styles */
 .cameras-panel {
-  position: fixed;
-  bottom: 20px;
-  left: 20px;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 8px;
 }
 
 .add-cameras-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   padding: 10px 16px;
+  min-width: 140px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(74, 158, 255, 0.3);
   border-radius: 8px;
   color: #fff;
   font-size: 13px;
@@ -1023,13 +1113,13 @@
 }
 
 .add-cameras-btn:hover {
-  background: rgba(255, 140, 0, 0.2);
-  border-color: #ff8c00;
+  background: rgba(74, 158, 255, 0.2);
+  border-color: #4a9eff;
 }
 
 .add-cameras-btn svg {
   flex-shrink: 0;
-  color: #ff8c00;
+  color: #4a9eff;
 }
 
 .cameras-toggle-all {
@@ -1080,7 +1170,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 8px 12px;
+  min-width: 240px;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);

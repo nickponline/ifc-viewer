@@ -10,6 +10,7 @@ interface FilterPanelProps {
   metadata: IFCMetadata
   selectedStorey: number | null
   onStoreySelect: (storeyId: number | null) => void
+  isGalleryView: boolean
 }
 
 const CATEGORY_NAMES: Record<number, string> = {
@@ -68,32 +69,38 @@ export function FilterPanel({
   fileName,
   metadata,
   selectedStorey,
-  onStoreySelect
+  onStoreySelect,
+  isGalleryView
 }: FilterPanelProps) {
   const [activeTab, setActiveTab] = useState<'elements' | 'info'>('elements')
-  const [isCollapsed, setIsCollapsed] = useState(false)
+  const [isCollapsed, setIsCollapsed] = useState(true)
   const visibleCount = categories.filter(c => c.visible).length
   const allVisible = visibleCount === categories.length
   const noneVisible = visibleCount === 0
 
+  if (isGalleryView) {
+    return null
+  }
+
   return (
     <div className={`filter-panel ${isCollapsed ? 'collapsed' : ''}`}>
-      <div className="filter-header">
-        <span className="file-name" title={fileName}>{fileName}</span>
-        <button
-          className="collapse-btn"
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          title={isCollapsed ? 'Expand panel' : 'Collapse panel'}
+      <button
+        className="filter-header"
+        onClick={() => setIsCollapsed(!isCollapsed)}
+      >
+        <span>{fileName}</span>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          width="14"
+          height="14"
+          className={`filter-chevron ${isCollapsed ? 'collapsed' : ''}`}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-            {isCollapsed ? (
-              <polyline points="15,18 9,12 15,6" />
-            ) : (
-              <polyline points="9,18 15,12 9,6" />
-            )}
-          </svg>
-        </button>
-      </div>
+          <polyline points="6,9 12,15 18,9"/>
+        </svg>
+      </button>
 
       {!isCollapsed && (
         <>

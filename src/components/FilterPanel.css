@@ -16,52 +16,44 @@
 }
 
 .filter-panel.collapsed {
-  width: auto;
-  min-width: 60px;
+  padding: 8px 12px;
+  min-width: auto;
 }
 
 .filter-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
   gap: 8px;
-}
-
-.filter-panel:not(.collapsed) .filter-header {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.file-name {
-  font-size: 12px;
-  color: #aaa;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-}
-
-.filter-panel.collapsed .file-name {
-  display: none;
-}
-
-.collapse-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
+  width: 100%;
+  padding: 0;
+  margin-bottom: 8px;
   background: transparent;
   border: none;
-  color: #888;
+  color: #4a9eff;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   cursor: pointer;
   transition: color 0.2s ease;
-  flex-shrink: 0;
 }
 
-.collapse-btn:hover {
+.filter-header:hover {
   color: #fff;
+}
+
+.filter-panel.collapsed .filter-header {
+  margin-bottom: 0;
+}
+
+.filter-chevron {
+  transition: transform 0.2s ease;
+}
+
+.filter-chevron.collapsed {
+  transform: rotate(-90deg);
 }
 
 .tab-bar {
@@ -321,16 +313,7 @@
   }
 
   .filter-panel.collapsed {
-    width: auto;
-  }
-
-  .filter-panel:not(.collapsed) .filter-header {
-    margin-bottom: 10px;
-    padding-bottom: 10px;
-  }
-
-  .file-name {
-    font-size: 11px;
+    min-width: auto;
   }
 
   .tab-btn {
